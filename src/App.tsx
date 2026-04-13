@@ -18,6 +18,7 @@ import {
   fetchRoutine, upsertRoutine, deleteRoutine,
   fetchSessions, insertSession, deleteSession as dbDeleteSession,
   fetchWeights, upsertWeight,
+  fetchFullBackup, restoreFullBackup,
 } from './supabase';
 
 // ─── EXCEL PARSER ──────────────────────────────────────────────────────────
@@ -955,6 +956,7 @@ function ProgressView({ sessions, user, routine, onBack }: { sessions: WorkoutSe
   );
 }
 
+
 // ─── ADMIN PANEL ───────────────────────────────────────────────────────────
 type AdminSubview = 'dashboard' | 'upload' | 'profiles' | 'backup';
 
@@ -969,6 +971,7 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
   const [loading, setLoading] = useState(false);
   const [uploadedRoutine, setUploadedRoutine] = useState<Routine | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadLoading, setUploadLoading] = useState(false);
   const [addForm, setAddForm] = useState(false);
   const [newName, setNewName] = useState('');
   const [newUsername, setNewUsername] = useState('');
@@ -976,10 +979,13 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
   const [newImg, setNewImg] = useState('');
   const [editUser, setEditUser] = useState<UserProfile | null>(null);
   const [editPw, setEditPw] = useState('');
+  const [backupLoading, setBackupLoading] = useState(false);
+  const [importLoading, setImportLoading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const importRef = useRef<HTMLInputElement>(null);
   const dropRef = useRef<HTMLDivElement>(null);
 
-  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 2500); };
+  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 2800); };
 
   const loadData = async () => {
     setLoading(true);
@@ -989,19 +995,21 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
       const rMap: Record<string, Routine | null> = {};
       await Promise.all(profiles.map(async p => { rMap[p.id] = await fetchRoutine(p.id); }));
       setRoutines(rMap);
-    } catch { showToast('Error al cargar datos'); }
+    } catch (e: any) { showToast('Error al cargar: ' + e.message); }
     setLoading(false);
   };
 
-  const submitLogin = async () => {
+  const submitLogin = () => {
     if (pw === ADMIN_PASSWORD) { setAuthed(true); setPwErr(false); loadData(); }
     else { setPwErr(true); setTimeout(() => setPwErr(false), 800); }
   };
 
   const handleFile = async (file: File) => {
     if (!file.name.match(/\.xlsx?$/i)) { setUploadError('Solo se admiten archivos .xlsx'); return; }
-    setUploadError(null); setUploadedRoutine(null);
-    try { setUploadedRoutine(await parseExcelToRoutine(file)); } catch (err: any) { setUploadError(err.message); }
+    setUploadError(null); setUploadedRoutine(null); setUploadLoading(true);
+    try { setUploadedRoutine(await parseExcelToRoutine(file)); }
+    catch (err: any) { setUploadError(err.message); }
+    setUploadLoading(false);
   };
 
   const assignRoutine = async (userId: string) => {
@@ -1010,61 +1018,81 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
       await upsertRoutine(userId, uploadedRoutine);
       setRoutines(prev => ({ ...prev, [userId]: uploadedRoutine }));
       setUploadedRoutine(null);
-      showToast('Rutina asignada ✓');
+      if (fileRef.current) fileRef.current.value = '';
+      const userName = users.find(u => u.id === userId)?.name || userId;
+      showToast(`Rutina asignada a ${userName} ✓`);
       setSubview('dashboard');
-    } catch { showToast('Error al asignar rutina'); }
+    } catch (e: any) { showToast('Error al asignar: ' + e.message); }
   };
 
   const resetRoutine = async (userId: string) => {
+    if (!confirm('¿Eliminar la rutina personalizada y volver a la por defecto?')) return;
     try {
       await deleteRoutine(userId);
       setRoutines(prev => ({ ...prev, [userId]: null }));
-      showToast('Rutina restaurada');
-    } catch { showToast('Error'); }
+      showToast('Rutina eliminada — usando rutina por defecto');
+    } catch (e: any) { showToast('Error: ' + e.message); }
   };
 
   const addUser = async () => {
     if (!newName.trim() || !newUsername.trim() || !newPassword.trim()) { showToast('Rellena nombre, usuario y contraseña'); return; }
-    if (users.find(u => u.username.toLowerCase() === newUsername.toLowerCase().trim())) { showToast('Ese usuario ya existe'); return; }
+    if (users.find(u => u.username.toLowerCase() === newUsername.toLowerCase().trim())) { showToast('Ese nombre de usuario ya existe'); return; }
     try {
-      const created = await createProfile({ name: newName.trim(), username: newUsername.trim(), password: newPassword, avatarUrl: newImg.trim() || undefined });
+      const created = await createProfile({ name: newName.trim(), username: newUsername.trim().toLowerCase(), password: newPassword, avatarUrl: newImg.trim() || undefined });
       setUsers(prev => [...prev, created]);
+      setRoutines(prev => ({ ...prev, [created.id]: null }));
       setNewName(''); setNewUsername(''); setNewPassword(''); setNewImg(''); setAddForm(false);
-      showToast(`Usuario ${newName} creado ✓`);
-    } catch { showToast('Error al crear usuario'); }
+      showToast(`Usuario "${newName}" creado ✓`);
+    } catch (e: any) { showToast('Error al crear: ' + e.message); }
   };
 
   const removeUser = async (id: string) => {
-    if (!confirm('¿Eliminar este usuario? Su historial también se borrará.')) return;
+    const u = users.find(x => x.id === id);
+    if (!confirm(`¿Eliminar a "${u?.name}"? Se borrarán todos sus datos.`)) return;
     try {
       await deleteProfile(id);
       setUsers(prev => prev.filter(u => u.id !== id));
+      setRoutines(prev => { const n = { ...prev }; delete n[id]; return n; });
       showToast('Usuario eliminado');
-    } catch { showToast('Error al eliminar'); }
+    } catch (e: any) { showToast('Error: ' + e.message); }
   };
 
   const saveEditUser = async () => {
     if (!editUser) return;
-    const updated = { ...editUser, ...(editPw ? { password: editPw } : {}) };
+    const updated = { ...editUser, username: editUser.username.toLowerCase().trim(), ...(editPw ? { password: editPw } : {}) };
     try {
       await updateProfile(updated);
       setUsers(prev => prev.map(u => u.id === updated.id ? updated : u));
       setEditUser(null); setEditPw('');
       showToast('Usuario actualizado ✓');
-    } catch { showToast('Error al actualizar'); }
+    } catch (e: any) { showToast('Error: ' + e.message); }
   };
 
   const exportBackup = async () => {
+    setBackupLoading(true);
     try {
-      const profiles = await fetchProfiles();
-      const data = { profiles, exportedAt: new Date().toISOString(), note: 'Sessions and weights are stored in Supabase and do not need to be exported.' };
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const backup = await fetchFullBackup();
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a'); a.href = url;
       a.download = `gymtrainer-backup-${format(new Date(), 'yyyy-MM-dd')}.json`; a.click();
       URL.revokeObjectURL(url);
-      showToast('Backup exportado ✓');
-    } catch { showToast('Error al exportar'); }
+      showToast('Backup completo exportado ✓');
+    } catch (e: any) { showToast('Error al exportar: ' + e.message); }
+    setBackupLoading(false);
+  };
+
+  const importBackup = async (file: File) => {
+    if (!confirm('¿Importar backup? Esto reemplazará todos los datos actuales.')) return;
+    setImportLoading(true);
+    try {
+      const text = await file.text();
+      const backup = JSON.parse(text);
+      await restoreFullBackup(backup);
+      showToast('Backup importado correctamente ✓');
+      loadData();
+    } catch (e: any) { showToast('Error al importar: ' + e.message); }
+    setImportLoading(false);
   };
 
   if (!authed) return (
@@ -1090,7 +1118,12 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
 
   if (loading) return <div style={{ background: 'var(--bg)', minHeight: '100vh' }}><Spinner /></div>;
 
-  const subviews: { key: AdminSubview; label: string }[] = [{ key: 'dashboard', label: 'Dashboard' }, { key: 'upload', label: 'Rutinas' }, { key: 'profiles', label: 'Usuarios' }, { key: 'backup', label: 'Backup' }];
+  const subviews: { key: AdminSubview; label: string }[] = [
+    { key: 'dashboard', label: 'Dashboard' },
+    { key: 'upload', label: 'Rutinas' },
+    { key: 'profiles', label: 'Usuarios' },
+    { key: 'backup', label: 'Backup' },
+  ];
 
   return (
     <div className="flex-1 flex flex-col p-6 pt-10" style={{ background: 'var(--bg)', minHeight: '100vh' }}>
@@ -1119,37 +1152,44 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
           users.length === 0
             ? <div className="flex flex-col items-center justify-center py-16" style={{ color: 'var(--ink-dim)' }}>
                 <User size={48} className="mb-4 opacity-20" />
-                <p className="text-[10px] font-black uppercase tracking-widest">Sin usuarios. Ve a "Usuarios".</p>
+                <p className="text-[10px] font-black uppercase tracking-widest">Sin usuarios. Ve a Usuarios.</p>
               </div>
             : users.map(u => {
                 const routine = routines[u.id];
-                const isCustom = !!routine;
+                const hasCustom = routine !== null && routine !== undefined;
+                const display = routine || ROUTINE_DATA;
                 return (
                   <div key={u.id} className="card-xl overflow-hidden">
                     <div className="p-4 flex items-center gap-3" style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface2)' }}>
                       <Avatar name={u.name} src={u.avatarUrl} size="sm" />
-                      <div className="flex-1">
+                      <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <h3 className="font-black" style={{ color: 'var(--ink)' }}>{u.name}</h3>
                           <span className="text-[8px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded"
-                            style={{ background: isCustom ? 'var(--accent-dim)' : 'var(--surface)', border: `1px solid ${isCustom ? 'var(--accent-mid)' : 'var(--border)'}`, color: isCustom ? 'var(--accent)' : 'var(--ink-muted)' }}>
-                            {isCustom ? 'Personalizada' : 'Por defecto'}
+                            style={{ background: hasCustom ? 'var(--accent-dim)' : 'var(--surface)', border: `1px solid ${hasCustom ? 'var(--accent-mid)' : 'var(--border)'}`, color: hasCustom ? 'var(--accent)' : 'var(--ink-muted)' }}>
+                            {hasCustom ? 'Rutina personalizada' : 'Rutina por defecto'}
                           </span>
                         </div>
-                        <p className="text-[9px] mt-0.5" style={{ color: 'var(--ink-muted)' }}>@{u.username} · {(routine || ROUTINE_DATA).nombre}</p>
+                        <p className="text-[9px] mt-0.5 truncate" style={{ color: 'var(--ink-muted)' }}>@{u.username} · {display.nombre}</p>
+                        {hasCustom && <p className="text-[8px] mt-0.5" style={{ color: 'var(--ink-dim)' }}>{display.dias.length} días · {display.dias.reduce((t, d) => t + d.ejercicios.length, 0)} ejercicios</p>}
                       </div>
                     </div>
-                    {isCustom && (
-                      <div className="px-4 py-3">
+                    <div className="px-4 py-3 flex gap-2">
+                      <button onClick={() => { setSubview('upload'); setUploadedRoutine(null); setUploadError(null); }}
+                        className="flex-1 py-2.5 text-[9px] font-black uppercase tracking-widest rounded-xl cursor-pointer transition-all"
+                        style={{ background: 'var(--accent-dim)', border: '1px solid var(--accent-mid)', color: 'var(--accent)' }}>
+                        {hasCustom ? 'Cambiar rutina' : 'Asignar rutina'}
+                      </button>
+                      {hasCustom && (
                         <button onClick={() => resetRoutine(u.id)}
-                          className="w-full py-2.5 text-[9px] font-black uppercase tracking-widest rounded-xl transition-all cursor-pointer"
+                          className="flex-1 py-2.5 text-[9px] font-black uppercase tracking-widest rounded-xl cursor-pointer transition-all"
                           style={{ background: 'none', border: '1px solid var(--border)', color: 'var(--ink-muted)' }}
                           onMouseOver={e => { e.currentTarget.style.borderColor = 'var(--red)'; e.currentTarget.style.color = 'var(--red)'; }}
                           onMouseOut={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--ink-muted)'; }}>
-                          ↺ Restaurar por defecto
+                          Quitar rutina
                         </button>
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </div>
                 );
               })
@@ -1158,45 +1198,95 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
         {subview === 'upload' && <>
           <div>
             <h3 className="font-black mb-1" style={{ color: 'var(--ink)' }}>Subir Excel de Rutina</h3>
-            <p className="text-xs leading-relaxed" style={{ color: 'var(--ink-muted)' }}>Cada hoja es un día. Columnas: <span style={{ color: 'var(--ink)' }}>Ejercicio, Series, Repeticiones, RPE, Descanso, Video, Observaciones</span>.</p>
+            <p className="text-xs leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
+              Cada hoja del Excel es un día. Columnas: <span style={{ color: 'var(--ink)' }}>Ejercicio, Series, Repeticiones, RPE, Descanso (seg), Video, Observaciones</span>. Cada usuario tiene su propia rutina independiente.
+            </p>
           </div>
+
           <div ref={dropRef} onClick={() => fileRef.current?.click()}
             className="rounded-[1.5rem] p-10 text-center cursor-pointer transition-all"
             style={{ border: '2px dashed var(--border)' }}
             onDragOver={e => { e.preventDefault(); if (dropRef.current) { dropRef.current.style.borderColor = 'var(--accent)'; dropRef.current.style.background = 'var(--accent-dim)'; }}}
             onDragLeave={() => { if (dropRef.current) { dropRef.current.style.borderColor = 'var(--border)'; dropRef.current.style.background = ''; }}}
             onDrop={e => { e.preventDefault(); if (dropRef.current) { dropRef.current.style.borderColor = 'var(--border)'; dropRef.current.style.background = ''; } const f = e.dataTransfer.files[0]; if (f) handleFile(f); }}>
-            <Upload size={26} style={{ color: 'var(--accent)', margin: '0 auto 0.75rem' }} />
-            <p className="font-black mb-1" style={{ color: 'var(--ink)' }}>Arrastra tu Excel aquí</p>
-            <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>o haz click · .xlsx</p>
+            {uploadLoading
+              ? <Loader size={26} className="animate-spin mx-auto mb-3" style={{ color: 'var(--accent)' }} />
+              : <Upload size={26} style={{ color: 'var(--accent)', margin: '0 auto 0.75rem' }} />}
+            <p className="font-black mb-1" style={{ color: 'var(--ink)' }}>{uploadLoading ? 'Procesando…' : 'Arrastra tu Excel aquí'}</p>
+            {!uploadLoading && <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>o haz click · .xlsx</p>}
           </div>
-          <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
-          {uploadError && <div className="rounded-xl p-4 text-sm" style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', color: 'var(--red)' }}>{uploadError}</div>}
+          <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden"
+            onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); e.target.value = ''; }} />
+
+          {uploadError && (
+            <div className="rounded-xl p-4 text-sm" style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', color: 'var(--red)' }}>
+              ⚠ {uploadError}
+            </div>
+          )}
+
           {uploadedRoutine && <>
             <div className="card-xl p-5" style={{ border: '1px solid var(--accent-mid)', background: 'var(--accent-dim)' }}>
-              <div className="flex items-center gap-2 mb-3">
-                <div className="w-6 h-6 rounded-full flex items-center justify-center" style={{ background: 'var(--accent)', color: '#fff' }}><Check size={12} style={{ strokeWidth: 4 }} /></div>
-                <span className="font-black" style={{ color: 'var(--accent)' }}>{uploadedRoutine.nombre}</span>
+              <div className="flex items-center gap-2 mb-2">
+                <div className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: 'var(--accent)', color: '#fff' }}><Check size={12} style={{ strokeWidth: 4 }} /></div>
+                <span className="font-black text-sm" style={{ color: 'var(--accent)' }}>{uploadedRoutine.nombre}</span>
               </div>
-              <p className="text-[9px] font-black uppercase tracking-widest mb-3" style={{ color: 'var(--ink-muted)' }}>{uploadedRoutine.dias.length} días · {uploadedRoutine.dias.reduce((t, d) => t + d.ejercicios.length, 0)} ejercicios</p>
-              {uploadedRoutine.dias.map(d => <div key={d.dia} className="rounded-xl p-3 mb-2" style={{ background: 'rgba(0,0,0,0.2)' }}><p className="font-black text-xs mb-0.5" style={{ color: 'var(--ink)' }}>{d.nombre}</p><p className="text-[9px]" style={{ color: 'var(--ink-muted)' }}>{d.ejercicios.map(e => e.nombre).join(' · ')}</p></div>)}
+              <p className="text-[9px] font-black uppercase tracking-widest mb-3" style={{ color: 'var(--ink-muted)' }}>
+                {uploadedRoutine.dias.length} día{uploadedRoutine.dias.length !== 1 ? 's' : ''} · {uploadedRoutine.dias.reduce((t, d) => t + d.ejercicios.length, 0)} ejercicios
+              </p>
+              {uploadedRoutine.dias.map(d => (
+                <div key={d.dia} className="rounded-xl p-3 mb-2" style={{ background: 'rgba(0,0,0,0.2)' }}>
+                  <p className="font-black text-xs mb-1" style={{ color: 'var(--ink)' }}>{d.nombre}</p>
+                  <p className="text-[9px] leading-relaxed" style={{ color: 'var(--ink-muted)' }}>{d.ejercicios.map(e => e.nombre).join(' · ')}</p>
+                </div>
+              ))}
             </div>
+
             <div>
               <p className="text-[9px] font-black uppercase tracking-widest mb-3" style={{ color: 'var(--ink-muted)' }}>Asignar a:</p>
               {users.length === 0
-                ? <p className="text-sm" style={{ color: 'var(--ink-dim)' }}>No hay usuarios. Créalos primero.</p>
+                ? <p className="text-sm" style={{ color: 'var(--ink-dim)' }}>No hay usuarios. Créalos primero en Usuarios.</p>
                 : users.map(u => (
                   <button key={u.id} onClick={() => assignRoutine(u.id)}
                     className="w-full rounded-2xl px-4 py-4 flex items-center justify-between mb-2 transition-all active:scale-[0.98] cursor-pointer"
                     style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
                     onMouseOver={e => e.currentTarget.style.borderColor = 'var(--accent)'}
                     onMouseOut={e => e.currentTarget.style.borderColor = 'var(--border)'}>
-                    <div className="flex items-center gap-3"><Avatar name={u.name} src={u.avatarUrl} size="sm" /><div className="text-left"><p className="font-black" style={{ color: 'var(--ink)' }}>{u.name}</p><p className="text-[9px]" style={{ color: 'var(--ink-muted)' }}>@{u.username}</p></div></div>
+                    <div className="flex items-center gap-3">
+                      <Avatar name={u.name} src={u.avatarUrl} size="sm" />
+                      <div className="text-left">
+                        <p className="font-black" style={{ color: 'var(--ink)' }}>{u.name}</p>
+                        <p className="text-[9px]" style={{ color: 'var(--ink-muted)' }}>
+                          @{u.username}{routines[u.id] ? ' · reemplazará rutina actual' : ''}
+                        </p>
+                      </div>
+                    </div>
                     <ArrowRight size={16} style={{ color: 'var(--ink-dim)' }} />
                   </button>
                 ))}
             </div>
+
+            <button onClick={() => { setUploadedRoutine(null); setUploadError(null); if (fileRef.current) fileRef.current.value = ''; }}
+              className="btn-secondary">Cancelar y subir otro Excel</button>
           </>}
+
+          <div className="card rounded-xl p-4">
+            <p className="text-[9px] font-black uppercase tracking-widest mb-3" style={{ color: 'var(--ink-muted)' }}>Formato de columnas</p>
+            <div className="overflow-x-auto">
+              <table className="text-[9px] border-collapse w-full">
+                <thead>
+                  <tr>{['Ejercicio', 'Series', 'Reps', 'RPE', 'Descanso', 'Video', 'Observaciones'].map(h => (
+                    <th key={h} className="px-2 py-1.5 font-black uppercase tracking-wide whitespace-nowrap text-left"
+                      style={{ background: 'var(--surface2)', border: '1px solid var(--border)', color: 'var(--ink-muted)' }}>{h}</th>
+                  ))}</tr>
+                </thead>
+                <tbody>
+                  <tr>{['Sentadilla', '3', '8-12', '8,9,10', '240', 'https://...', 'Baja lento'].map((v, i) => (
+                    <td key={i} className="px-2 py-1.5" style={{ border: '1px solid var(--border)', color: 'var(--ink-muted)' }}>{v}</td>
+                  ))}</tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
         </>}
 
         {subview === 'profiles' && <>
@@ -1207,40 +1297,47 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
               <Plus size={11} /> Añadir
             </button>
           </div>
+
           {users.map(u => (
             <div key={u.id} className="card rounded-2xl p-4 flex items-center gap-3">
               <Avatar name={u.name} src={u.avatarUrl} size="sm" />
-              <div className="flex-1">
+              <div className="flex-1 min-w-0">
                 <p className="font-black" style={{ color: 'var(--ink)' }}>{u.name}</p>
                 <p className="text-[9px]" style={{ color: 'var(--ink-muted)' }}>@{u.username}</p>
               </div>
-              <button onClick={() => { setEditUser(u); setEditPw(''); }} className="p-2 cursor-pointer" style={{ background: 'none', border: 'none', color: 'var(--ink-dim)' }}
-                onMouseOver={e => e.currentTarget.style.color = 'var(--accent)'} onMouseOut={e => e.currentTarget.style.color = 'var(--ink-dim)'}>✎</button>
-              <button onClick={() => removeUser(u.id)} className="p-2 cursor-pointer" style={{ background: 'none', border: 'none', color: 'var(--ink-dim)' }}
-                onMouseOver={e => e.currentTarget.style.color = 'var(--red)'} onMouseOut={e => e.currentTarget.style.color = 'var(--ink-dim)'}><Trash2 size={15} /></button>
+              <button onClick={() => { setEditUser(u); setEditPw(''); }} className="p-2 cursor-pointer text-lg"
+                style={{ background: 'none', border: 'none', color: 'var(--ink-dim)' }}
+                onMouseOver={e => e.currentTarget.style.color = 'var(--accent)'}
+                onMouseOut={e => e.currentTarget.style.color = 'var(--ink-dim)'}>✎</button>
+              <button onClick={() => removeUser(u.id)} className="p-2 cursor-pointer"
+                style={{ background: 'none', border: 'none', color: 'var(--ink-dim)' }}
+                onMouseOver={e => e.currentTarget.style.color = 'var(--red)'}
+                onMouseOut={e => e.currentTarget.style.color = 'var(--ink-dim)'}><Trash2 size={15} /></button>
             </div>
           ))}
+
           {addForm && (
             <div className="card rounded-2xl p-5 space-y-3">
               <p className="text-[9px] font-black uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Nuevo usuario</p>
-              <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="Nombre completo" className="input" />
-              <input value={newUsername} onChange={e => setNewUsername(e.target.value)} placeholder="Usuario (para el login)" className="input" autoCapitalize="none" />
+              <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="Nombre completo (visible en la app)" className="input" />
+              <input value={newUsername} onChange={e => setNewUsername(e.target.value)} placeholder="Usuario para el login (ej: marcos)" className="input" autoCapitalize="none" />
               <input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="Contraseña" className="input" />
-              <input value={newImg} onChange={e => setNewImg(e.target.value)} placeholder="URL de foto (opcional)" className="input" />
+              <input value={newImg} onChange={e => setNewImg(e.target.value)} placeholder="URL de foto de perfil (opcional)" className="input" />
               <div className="flex gap-2">
-                <button onClick={addUser} className="btn-accent flex-1">Crear</button>
+                <button onClick={addUser} className="btn-accent flex-1">Crear usuario</button>
                 <button onClick={() => { setAddForm(false); setNewName(''); setNewUsername(''); setNewPassword(''); setNewImg(''); }} className="btn-secondary flex-1">Cancelar</button>
               </div>
             </div>
           )}
+
           <AnimatePresence>
             {editUser && (
               <Modal onClose={() => setEditUser(null)}>
                 <h3 className="text-lg font-black italic mb-4" style={{ color: 'var(--ink)' }}>Editar usuario</h3>
                 <div className="space-y-3 mb-4">
-                  <input value={editUser.name} onChange={e => setEditUser({ ...editUser, name: e.target.value })} placeholder="Nombre" className="input" />
-                  <input value={editUser.username} onChange={e => setEditUser({ ...editUser, username: e.target.value })} placeholder="Usuario" className="input" autoCapitalize="none" />
-                  <input type="password" value={editPw} onChange={e => setEditPw(e.target.value)} placeholder="Nueva contraseña (vacío = no cambiar)" className="input" />
+                  <input value={editUser.name} onChange={e => setEditUser({ ...editUser, name: e.target.value })} placeholder="Nombre completo" className="input" />
+                  <input value={editUser.username} onChange={e => setEditUser({ ...editUser, username: e.target.value })} placeholder="Nombre de usuario" className="input" autoCapitalize="none" />
+                  <input type="password" value={editPw} onChange={e => setEditPw(e.target.value)} placeholder="Nueva contraseña (vacío = sin cambio)" className="input" />
                   <input value={editUser.avatarUrl || ''} onChange={e => setEditUser({ ...editUser, avatarUrl: e.target.value })} placeholder="URL de foto" className="input" />
                 </div>
                 <button onClick={saveEditUser} className="btn-accent mb-2">Guardar cambios</button>
@@ -1252,22 +1349,53 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
 
         {subview === 'backup' && <>
           <div>
-            <h3 className="font-black mb-1" style={{ color: 'var(--ink)' }}>Datos en la nube</h3>
+            <h3 className="font-black mb-1" style={{ color: 'var(--ink)' }}>Backup completo</h3>
             <p className="text-xs leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
-              Todos los entrenamientos y pesos se guardan automáticamente en Supabase. El backup exporta solo la lista de usuarios.
+              El backup incluye usuarios, rutinas personalizadas, todo el historial de entrenamientos y los pesos de cada usuario.
             </p>
           </div>
-          <button onClick={exportBackup}
-            className="w-full card rounded-2xl p-5 flex items-center gap-4 active:scale-[0.98] cursor-pointer"
+
+          <button onClick={exportBackup} disabled={backupLoading}
+            className="w-full card rounded-2xl p-5 flex items-center gap-4 active:scale-[0.98] cursor-pointer disabled:opacity-50"
             style={{ background: 'var(--surface)', border: '1px solid var(--border)', textAlign: 'left' }}>
-            <div className="w-11 h-11 rounded-xl flex items-center justify-center" style={{ background: 'var(--accent-dim)', color: 'var(--accent)' }}><FileDown size={18} /></div>
-            <div><p className="font-black" style={{ color: 'var(--ink)' }}>Exportar lista de usuarios</p><p className="text-[10px]" style={{ color: 'var(--ink-muted)' }}>Descarga un .json con los perfiles</p></div>
+            <div className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'var(--accent-dim)', color: 'var(--accent)' }}>
+              {backupLoading ? <Loader size={18} className="animate-spin" /> : <FileDown size={18} />}
+            </div>
+            <div>
+              <p className="font-black" style={{ color: 'var(--ink)' }}>Exportar backup completo</p>
+              <p className="text-[10px]" style={{ color: 'var(--ink-muted)' }}>{backupLoading ? 'Descargando…' : 'Descarga un .json con todos los datos'}</p>
+            </div>
           </button>
+
+          <div onClick={() => importRef.current?.click()}
+            className="w-full card rounded-2xl p-5 flex items-center gap-4 active:scale-[0.98] cursor-pointer"
+            style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+            <div className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'var(--surface2)', color: 'var(--ink-muted)' }}>
+              {importLoading ? <Loader size={18} className="animate-spin" /> : <FileUp size={18} />}
+            </div>
+            <div>
+              <p className="font-black" style={{ color: 'var(--ink)' }}>Importar backup</p>
+              <p className="text-[10px]" style={{ color: 'var(--ink-muted)' }}>{importLoading ? 'Restaurando…' : 'Carga un .json exportado previamente'}</p>
+            </div>
+          </div>
+          <input ref={importRef} type="file" accept=".json" className="hidden"
+            onChange={e => { const f = e.target.files?.[0]; if (f) importBackup(f); e.target.value = ''; }} />
+
           <div className="rounded-xl p-4" style={{ background: 'var(--accent-dim)', border: '1px solid var(--accent-mid)' }}>
-            <p className="text-[9px] font-black uppercase tracking-widest mb-2" style={{ color: 'var(--accent)' }}>✓ Datos seguros en la nube</p>
-            <p className="text-xs leading-relaxed" style={{ color: 'var(--ink-muted)' }}>Sesiones, pesos y rutinas están en Supabase. Cualquier usuario puede acceder desde cualquier dispositivo en cualquier momento.</p>
+            <p className="text-[9px] font-black uppercase tracking-widest mb-2" style={{ color: 'var(--accent)' }}>Datos en la nube</p>
+            <p className="text-xs leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
+              Todo está en Supabase y es accesible desde cualquier dispositivo. El backup es una copia de seguridad adicional.
+            </p>
+          </div>
+
+          <div className="rounded-xl p-4" style={{ background: 'rgba(234,179,8,0.06)', border: '1px solid rgba(234,179,8,0.2)' }}>
+            <p className="text-[9px] font-black uppercase tracking-widest mb-1" style={{ color: '#eab308' }}>Atención al importar</p>
+            <p className="text-xs leading-relaxed" style={{ color: 'var(--ink-muted)' }}>
+              Los datos actuales serán reemplazados por los del archivo. Exporta primero si quieres conservarlos.
+            </p>
           </div>
         </>}
+
       </div>
       <AnimatePresence>{toast && <Toast msg={toast} />}</AnimatePresence>
     </div>

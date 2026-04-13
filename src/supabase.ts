@@ -49,16 +49,23 @@ export async function deleteProfile(id: string): Promise<void> {
 // ─── ROUTINES ──────────────────────────────────────────────────────────────
 
 export async function fetchRoutine(userId: string): Promise<Routine | null> {
-  const { data, error } = await supabase.from('routines').select('routine_data').eq('user_id', userId).maybeSingle();
+  const { data, error } = await supabase
+    .from('routines')
+    .select('routine_data')
+    .eq('user_id', userId)
+    .maybeSingle();
   if (error) throw error;
   return data ? (data.routine_data as Routine) : null;
 }
 
+// DELETE then INSERT to guarantee replacement — avoids onConflict index issues
 export async function upsertRoutine(userId: string, routine: Routine): Promise<void> {
-  const { error } = await supabase.from('routines').upsert(
-    { user_id: userId, routine_data: routine, updated_at: new Date().toISOString() },
-    { onConflict: 'user_id' }
-  );
+  await supabase.from('routines').delete().eq('user_id', userId);
+  const { error } = await supabase.from('routines').insert({
+    user_id: userId,
+    routine_data: routine,
+    updated_at: new Date().toISOString(),
+  });
   if (error) throw error;
 }
 
@@ -70,8 +77,27 @@ export async function deleteRoutine(userId: string): Promise<void> {
 // ─── SESSIONS ──────────────────────────────────────────────────────────────
 
 export async function fetchSessions(userId: string): Promise<WorkoutSession[]> {
-  const { data, error } = await supabase.from('sessions')
-    .select('*').eq('user_id', userId).order('date', { ascending: false });
+  const { data, error } = await supabase
+    .from('sessions')
+    .select('*')
+    .eq('user_id', userId)
+    .order('date', { ascending: false });
+  if (error) throw error;
+  return (data || []).map(row => ({
+    id: row.id,
+    dayName: row.day_name,
+    userName: row.user_id,
+    date: row.date,
+    note: row.note ?? undefined,
+    exercises: row.exercises as WorkoutSession['exercises'],
+  }));
+}
+
+export async function fetchAllSessions(): Promise<WorkoutSession[]> {
+  const { data, error } = await supabase
+    .from('sessions')
+    .select('*')
+    .order('date', { ascending: false });
   if (error) throw error;
   return (data || []).map(row => ({
     id: row.id,
@@ -103,17 +129,76 @@ export async function deleteSession(sessionId: string): Promise<void> {
 // ─── WEIGHTS ───────────────────────────────────────────────────────────────
 
 export async function fetchWeights(userId: string): Promise<Record<string, string[]>> {
-  const { data, error } = await supabase.from('weights').select('exercise_id, sets').eq('user_id', userId);
+  const { data, error } = await supabase
+    .from('weights')
+    .select('exercise_id, sets')
+    .eq('user_id', userId);
   if (error) throw error;
   const result: Record<string, string[]> = {};
   for (const row of data || []) result[row.exercise_id] = row.sets as string[];
   return result;
 }
 
-export async function upsertWeight(userId: string, exerciseId: string, sets: string[]): Promise<void> {
-  const { error } = await supabase.from('weights').upsert(
-    { user_id: userId, exercise_id: exerciseId, sets, updated_at: new Date().toISOString() },
-    { onConflict: 'user_id,exercise_id' }
-  );
+export async function fetchAllWeights(): Promise<{ userId: string; exerciseId: string; sets: string[] }[]> {
+  const { data, error } = await supabase.from('weights').select('user_id, exercise_id, sets');
   if (error) throw error;
+  return (data || []).map(r => ({ userId: r.user_id, exerciseId: r.exercise_id, sets: r.sets as string[] }));
+}
+
+// DELETE then INSERT to avoid onConflict index dependency
+export async function upsertWeight(userId: string, exerciseId: string, sets: string[]): Promise<void> {
+  await supabase.from('weights').delete().eq('user_id', userId).eq('exercise_id', exerciseId);
+  const { error } = await supabase.from('weights').insert({
+    user_id: userId,
+    exercise_id: exerciseId,
+    sets,
+    updated_at: new Date().toISOString(),
+  });
+  if (error) throw error;
+}
+
+// ─── FULL BACKUP ───────────────────────────────────────────────────────────
+
+export async function fetchFullBackup() {
+  const [profiles, sessions, weights] = await Promise.all([
+    fetchProfiles(),
+    fetchAllSessions(),
+    fetchAllWeights(),
+  ]);
+
+  // fetch routines for all profiles
+  const routines: { userId: string; routine: Routine }[] = [];
+  await Promise.all(profiles.map(async p => {
+    const r = await fetchRoutine(p.id);
+    if (r) routines.push({ userId: p.id, routine: r });
+  }));
+
+  return { profiles, sessions, weights, routines, exportedAt: new Date().toISOString() };
+}
+
+export async function restoreFullBackup(backup: ReturnType<typeof fetchFullBackup> extends Promise<infer T> ? T : never): Promise<void> {
+  // restore profiles
+  for (const p of backup.profiles) {
+    await supabase.from('profiles').delete().eq('id', p.id);
+    await supabase.from('profiles').insert({
+      id: p.id, name: p.name, username: p.username,
+      password: p.password, avatar_url: p.avatarUrl ?? null,
+    });
+  }
+  // restore routines
+  for (const r of backup.routines) {
+    await upsertRoutine(r.userId, r.routine);
+  }
+  // restore sessions
+  for (const s of backup.sessions) {
+    await supabase.from('sessions').delete().eq('id', s.id);
+    await supabase.from('sessions').insert({
+      id: s.id, user_id: s.userName, day_name: s.dayName,
+      date: s.date, note: s.note ?? null, exercises: s.exercises,
+    });
+  }
+  // restore weights
+  for (const w of backup.weights) {
+    await upsertWeight(w.userId, w.exerciseId, w.sets);
+  }
 }
