@@ -7,7 +7,7 @@ import {
   Sun, Moon, Eye, EyeOff, User, Lock, Calendar, History,
   Table, BarChart2, Loader
 } from 'lucide-react';
-import { ROUTINE_DATA, EXERCISES_SHEET_URL, ADMIN_PASSWORD } from './constants';
+import { ROUTINE_DATA, ADMIN_PASSWORD } from './constants';
 import { Exercise, Routine, WorkoutSession, UserProfile, Theme } from './types';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -436,12 +436,20 @@ function HomeView({ user, sessions, routine, theme, onToggleTheme, onStartWorkou
           <History size={18} style={{ color: 'var(--ink-muted)' }} />
           <span className="text-[8px] font-black uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Log</span>
         </button>
-        <a href={EXERCISES_SHEET_URL} target="_blank" rel="noopener noreferrer"
-          className="col-span-2 rounded-2xl p-4 flex flex-col items-center justify-center gap-1.5 active:scale-95 transition-all no-underline"
-          style={{ background: 'var(--surface)', border: '1px solid var(--border)', minHeight: '6rem' }}>
-          <Table size={18} style={{ color: 'var(--ink-muted)' }} />
-          <span className="text-[8px] font-black uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Sheet</span>
-        </a>
+        {routine.sheetUrl ? (
+          <a href={routine.sheetUrl} target="_blank" rel="noopener noreferrer"
+            className="col-span-2 rounded-2xl p-4 flex flex-col items-center justify-center gap-1.5 active:scale-95 transition-all no-underline"
+            style={{ background: 'var(--surface)', border: '1px solid var(--border)', minHeight: '6rem' }}>
+            <Table size={18} style={{ color: 'var(--ink-muted)' }} />
+            <span className="text-[8px] font-black uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Sheet</span>
+          </a>
+        ) : (
+          <div className="col-span-2 rounded-2xl p-4 flex flex-col items-center justify-center gap-1.5 opacity-20"
+            style={{ background: 'var(--surface)', border: '1px solid var(--border)', minHeight: '6rem' }}>
+            <Table size={18} style={{ color: 'var(--ink-muted)' }} />
+            <span className="text-[8px] font-black uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Sheet</span>
+          </div>
+        )}
       </div>
 
       {/* Days */}
@@ -972,6 +980,7 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
   const [uploadedRoutine, setUploadedRoutine] = useState<Routine | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadLoading, setUploadLoading] = useState(false);
+  const [sheetUrl, setSheetUrl] = useState('');
   const [addForm, setAddForm] = useState(false);
   const [newName, setNewName] = useState('');
   const [newUsername, setNewUsername] = useState('');
@@ -1013,11 +1022,14 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
   };
 
   const assignRoutine = async (userId: string) => {
+    // embed sheetUrl into the routine before saving
+    const routineToSave = sheetUrl.trim() ? { ...uploadedRoutine!, sheetUrl: sheetUrl.trim() } : uploadedRoutine!;
     if (!uploadedRoutine) return;
     try {
-      await upsertRoutine(userId, uploadedRoutine);
-      setRoutines(prev => ({ ...prev, [userId]: uploadedRoutine }));
+      await upsertRoutine(userId, routineToSave);
+      setRoutines(prev => ({ ...prev, [userId]: routineToSave }));
       setUploadedRoutine(null);
+      setSheetUrl('');
       if (fileRef.current) fileRef.current.value = '';
       const userName = users.find(u => u.id === userId)?.name || userId;
       showToast(`Rutina asignada a ${userName} ✓`);
@@ -1241,6 +1253,20 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
               ))}
             </div>
 
+            {/* Sheet URL */}
+            <div>
+              <p className="text-[9px] font-black uppercase tracking-widest mb-2" style={{ color: 'var(--ink-muted)' }}>URL de hoja de cálculo (opcional)</p>
+              <input
+                value={sheetUrl}
+                onChange={e => setSheetUrl(e.target.value)}
+                placeholder="https://docs.google.com/spreadsheets/..."
+                className="input"
+              />
+              <p className="text-[9px] mt-1.5" style={{ color: 'var(--ink-dim)' }}>
+                Si la añades, el botón "Sheet" del usuario abrirá esta hoja. Si no, no se mostrará el botón.
+              </p>
+            </div>
+
             <div>
               <p className="text-[9px] font-black uppercase tracking-widest mb-3" style={{ color: 'var(--ink-muted)' }}>Asignar a:</p>
               {users.length === 0
@@ -1265,7 +1291,7 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
                 ))}
             </div>
 
-            <button onClick={() => { setUploadedRoutine(null); setUploadError(null); if (fileRef.current) fileRef.current.value = ''; }}
+            <button onClick={() => { setUploadedRoutine(null); setUploadError(null); setSheetUrl(''); if (fileRef.current) fileRef.current.value = ''; }}
               className="btn-secondary">Cancelar y subir otro Excel</button>
           </>}
 

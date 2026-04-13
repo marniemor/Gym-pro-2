@@ -18,6 +18,7 @@ export interface Day {
 export interface Routine {
   nombre: string;
   dias: Day[];
+  sheetUrl?: string;
 }
 
 export interface UserProfile {
