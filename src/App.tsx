@@ -623,11 +623,10 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
   const dashOffset = circ - (circ * restTime) / (totalRestSecs || exercise.descanso_segundos);
 
   return (
-    <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
-      className="flex-1 flex flex-col h-screen" style={{ background: 'var(--bg)' }}>
+    <div className="flex-1 flex flex-col h-screen" style={{ background: 'var(--bg)' }}>
 
       <header className="px-4 pt-8 pb-3 sticky top-0 z-30 backdrop-blur-xl"
-        style={{ background: theme => 'rgba(5,5,5,0.9)', borderBottom: '1px solid var(--border)' }}>
+        style={{ background: 'rgba(5,5,5,0.9)', borderBottom: '1px solid var(--border)' }}>
         <div className="flex items-center justify-between mb-5">
           <button onClick={() => setShowConfirmBack(true)} className="w-9 h-9 rounded-full flex items-center justify-center"
             style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--ink-muted)' }}>
@@ -909,7 +908,7 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
           </div>
         </div>
       )}
-    </motion.div>
+    </div>
   );
 }
 
@@ -1658,7 +1657,15 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
                               </tr>
                             </thead>
                             <tbody>
-                              {h.day.ejercicios.map((ex, ei) => (
+                              {h.day.ejercicios
+                                .filter(ex =>
+                                  // solo mostrar ejercicios que tienen datos en al menos una sesión
+                                  h.sessions.some(s => {
+                                    const exData = s.exercises.find(e => e.id === ex.id || e.nombre === ex.nombre);
+                                    return exData && exData.sets.some(Boolean);
+                                  })
+                                )
+                                .map((ex, ei) => (
                                 <tr key={ex.id} style={{ borderBottom: '1px solid var(--border)', background: ei % 2 === 0 ? 'var(--bg)' : 'var(--surface)' }}>
                                   <td className="px-3 py-3 font-bold sticky left-0"
                                     style={{ color: 'var(--ink)', background: ei % 2 === 0 ? 'var(--bg)' : 'var(--surface)', borderRight: '1px solid var(--border)', maxWidth: 160 }}>
