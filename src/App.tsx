@@ -19,6 +19,7 @@ import {
   fetchRoutine, upsertRoutine, deleteRoutine,
   fetchSessions, fetchAllSessions, insertSession, deleteSession as dbDeleteSession,
   fetchWeights, upsertWeight,
+  fetchExerciseNotes, upsertExerciseNote, deleteExerciseNote,
   fetchFullBackup, restoreFullBackup,
   verifyPassword, hashPassword,
 } from './supabase';
@@ -223,6 +224,7 @@ function UserApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => 
   const [routine, setRoutine] = useState<Routine>(ROUTINE_DATA);
   const [sessions, setSessions] = useState<WorkoutSession[]>([]);
   const [weights, setWeights] = useState<Record<string, string[]>>({});
+  const [exerciseNotes, setExerciseNotes] = useState<Record<string, { text: string; updatedAt: string }>>({});
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -233,21 +235,23 @@ function UserApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => 
   const handleLogin = async (user: UserProfile) => {
     setLoading(true);
     try {
-      const [r, s, w] = await Promise.all([
+      const [r, s, w, en] = await Promise.all([
         fetchRoutine(user.id),
         fetchSessions(user.id),
         fetchWeights(user.id),
+        fetchExerciseNotes(user.id),
       ]);
       setRoutine(r || ROUTINE_DATA);
       setSessions(s);
       setWeights(w);
+      setExerciseNotes(en);
       setCurrentUser(user);
       setView('home');
     } catch { showToast('Error al cargar datos'); }
     setLoading(false);
   };
 
-  const handleLogout = () => { setCurrentUser(null); setView('login'); setSessions([]); setWeights({}); setRoutine(ROUTINE_DATA); };
+  const handleLogout = () => { setCurrentUser(null); setView('login'); setSessions([]); setWeights({}); setExerciseNotes({}); setRoutine(ROUTINE_DATA); };
 
   const handleFinishWorkout = async (session: WorkoutSession) => {
     if (!currentUser) return;
@@ -287,7 +291,18 @@ function UserApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => 
           )}
           {view === 'workout' && currentUser && (
             <WorkoutView key="workout" user={currentUser} sessions={sessions} routine={routine}
-              weights={weights} onSaveWeight={handleSaveWeight} onFinish={handleFinishWorkout} onBack={() => setView('home')} />
+              weights={weights} onSaveWeight={handleSaveWeight} onFinish={handleFinishWorkout} onBack={() => setView('home')}
+              exerciseNotes={exerciseNotes}
+              onSaveExerciseNote={async (exId, text) => {
+                if (text.trim()) {
+                  await upsertExerciseNote(currentUser.id, exId, text.trim());
+                  setExerciseNotes(prev => ({ ...prev, [exId]: { text: text.trim(), updatedAt: new Date().toISOString() } }));
+                } else {
+                  await deleteExerciseNote(currentUser.id, exId);
+                  setExerciseNotes(prev => { const n = { ...prev }; delete n[exId]; return n; });
+                }
+              }}
+            />
           )}
           {view === 'history' && currentUser && (
             <HistoryView key="history" sessions={sessions} routine={routine} onBack={() => setView('home')} onDelete={handleDeleteSession} />
@@ -486,10 +501,12 @@ function HomeView({ user, sessions, routine, theme, onToggleTheme, onStartWorkou
 }
 
 // ─── WORKOUT ───────────────────────────────────────────────────────────────
-function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish, onBack }: {
+function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish, onBack, exerciseNotes, onSaveExerciseNote }: {
   user: UserProfile; sessions: WorkoutSession[]; routine: Routine;
   weights: Record<string, string[]>; onSaveWeight: (id: string, idx: number, w: string) => void;
   onFinish: (s: WorkoutSession) => void; onBack: () => void;
+  exerciseNotes: Record<string, { text: string; updatedAt: string }>;
+  onSaveExerciseNote: (exerciseId: string, text: string) => Promise<void>;
 }) {
   const [dayIdx, setDayIdx] = useState(0);
   const [exIdx, setExIdx] = useState(0);
@@ -504,6 +521,10 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
   const [showNote, setShowNote] = useState(false);
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
+  // ── Notas por ejercicio (desde Supabase vía props) ──
+  const [showExNote, setShowExNote] = useState(false);
+  const [showExNoteAlert, setShowExNoteAlert] = useState(false);
+  const [exNoteSaving, setExNoteSaving] = useState(false);
   const [editingAllSets, setEditingAllSets] = useState(false);
   const [totalRestSecs, setTotalRestSecs] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -514,6 +535,21 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
   const isLastSet = currentSet === exercise?.series;
 
   useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
+
+  // Mostrar aviso de nota anterior cuando cambia el ejercicio
+  useEffect(() => {
+    if (!exercise) return;
+    const saved = exerciseNotes[exercise.id];
+    if (saved) {
+      const savedDate = new Date(saved.updatedAt).toDateString();
+      const today = new Date().toDateString();
+      // Mostrar popup solo si la nota es de un día anterior
+      if (savedDate !== today) {
+        setShowExNoteAlert(true);
+      }
+    }
+    setShowExNote(false);
+  }, [exercise?.id]);
 
   const startRest = (secs: number) => {
     if (timerRef.current) clearInterval(timerRef.current);
@@ -532,6 +568,14 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
   };
 
   const skipRest = () => { if (timerRef.current) clearInterval(timerRef.current); setIsResting(false); setRestTime(0); };
+
+  const saveExNote = async (text: string) => {
+    if (!exercise) return;
+    setExNoteSaving(true);
+    try { await onSaveExerciseNote(exercise.id, text); } catch {}
+    setExNoteSaving(false);
+    setShowExNote(false);
+  };
 
   const saveWeight = (val: string, overrideIdx?: number) => {
     const idx = overrideIdx !== undefined ? overrideIdx : currentSet - 1;
@@ -757,9 +801,9 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
                   style={{ border: '1px solid var(--border)', background: 'transparent', color: 'var(--ink-muted)', cursor: 'pointer' }}>
                   <Video size={13} /> Ver Técnica
                 </button>
-                <button onClick={() => setShowNote(true)} className="flex-1 py-3 flex items-center justify-center gap-2 text-[9px] font-black uppercase tracking-[0.15em] rounded-xl"
-                  style={{ border: `1px solid ${note ? 'var(--accent-mid)' : 'var(--border)'}`, background: note ? 'var(--accent-dim)' : 'transparent', color: note ? 'var(--accent)' : 'var(--ink-muted)', cursor: 'pointer' }}>
-                  <StickyNote size={13} /> {note ? 'Nota ✓' : 'Nota'}
+                <button onClick={() => setShowExNote(true)} className="flex-1 py-3 flex items-center justify-center gap-2 text-[9px] font-black uppercase tracking-[0.15em] rounded-xl"
+                  style={{ border: `1px solid ${exerciseNotes[exercise.id] ? 'var(--accent-mid)' : 'var(--border)'}`, background: exerciseNotes[exercise.id] ? 'var(--accent-dim)' : 'transparent', color: exerciseNotes[exercise.id] ? 'var(--accent)' : 'var(--ink-muted)', cursor: 'pointer' }}>
+                  <StickyNote size={13} /> {exerciseNotes[exercise.id] ? 'Nota ✓' : 'Nota'}
                 </button>
               </div>
             </motion.div>
@@ -811,6 +855,51 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
               style={{ background: 'var(--surface2)', border: '1px solid var(--border)', color: 'var(--ink)' }} />
             <button onClick={() => { const el = document.getElementById('noteTA') as HTMLTextAreaElement; setNote(el?.value || ''); setShowNote(false); }}
               className="btn-accent mt-4">Guardar</button>
+          </Modal>
+        )}
+        {/* ── Aviso nota anterior del ejercicio ── */}
+        {showExNoteAlert && exerciseNotes[exercise?.id ?? ''] && (
+          <Modal onClose={() => setShowExNoteAlert(false)}>
+            <div className="flex items-center gap-2 mb-3">
+              <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(234,179,8,0.15)', color: '#eab308' }}>
+                <StickyNote size={15} />
+              </div>
+              <div>
+                <h3 className="text-base font-black italic" style={{ color: 'var(--ink)' }}>Nota anterior</h3>
+                <p className="text-[9px] font-black uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>{exercise?.nombre}</p>
+              </div>
+            </div>
+            <div className="rounded-xl p-4 mb-4 text-sm leading-relaxed" style={{ background: 'rgba(234,179,8,0.07)', border: '1px solid rgba(234,179,8,0.22)', color: 'var(--ink)' }}>
+              "{exerciseNotes[exercise?.id ?? '']?.text}"
+            </div>
+            <button onClick={() => setShowExNoteAlert(false)} className="btn-accent">Entendido</button>
+          </Modal>
+        )}
+        {/* ── Editor de nota del ejercicio ── */}
+        {showExNote && (
+          <Modal onClose={() => !exNoteSaving && setShowExNote(false)}>
+            <div className="flex items-center gap-2 mb-4">
+              <StickyNote size={16} style={{ color: 'var(--accent)' }} />
+              <h3 className="text-xl font-black italic" style={{ color: 'var(--ink)' }}>Nota del ejercicio</h3>
+            </div>
+            <p className="text-[10px] font-black uppercase tracking-widest mb-3" style={{ color: 'var(--ink-muted)' }}>{exercise?.nombre}</p>
+            <textarea rows={4} defaultValue={exerciseNotes[exercise?.id ?? '']?.text ?? ''} id="exNoteTA"
+              placeholder="Dolor en hombro, fallo en serie 3, nueva técnica…"
+              className="w-full rounded-xl px-4 py-3 text-sm resize-none outline-none"
+              style={{ background: 'var(--surface2)', border: '1px solid var(--border)', color: 'var(--ink)' }} />
+            <div className="flex gap-2 mt-4">
+              <button onClick={() => { const el = document.getElementById('exNoteTA') as HTMLTextAreaElement; saveExNote(el?.value || ''); }}
+                disabled={exNoteSaving} className="btn-accent flex-1 disabled:opacity-50">
+                {exNoteSaving ? <><Loader size={13} className="animate-spin" /> Guardando…</> : 'Guardar'}
+              </button>
+              {exerciseNotes[exercise?.id ?? ''] && (
+                <button onClick={() => saveExNote('')} disabled={exNoteSaving}
+                  className="py-4 px-4 rounded-xl font-black text-xs uppercase tracking-widest cursor-pointer disabled:opacity-50"
+                  style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', color: 'var(--red)' }}>
+                  Borrar
+                </button>
+              )}
+            </div>
           </Modal>
         )}
       </AnimatePresence>
@@ -1091,6 +1180,7 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
   const [editPw, setEditPw] = useState('');
   const [backupLoading, setBackupLoading] = useState(false);
   const [importLoading, setImportLoading] = useState(false);
+  const [excelLoading, setExcelLoading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const dropRef = useRef<HTMLDivElement>(null);
@@ -1242,6 +1332,82 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
     setBackupLoading(false);
   };
 
+  const exportExcel = async () => {
+    setExcelLoading(true);
+    try {
+      // Fetch everything we need
+      const [profiles, sessions] = await Promise.all([fetchProfiles(), fetchAllSessions()]);
+      const wb = XLSX.utils.book_new();
+
+      for (const user of users) {
+        const routine = routines[user.id];
+        if (!routine) continue;
+        const userSessions = sessions
+          .filter(s => s.userName === user.id)
+          .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+        for (const day of routine.dias) {
+          // Sheet name: "NombreUsuario - DíaN" (max 31 chars for Excel)
+          const rawName = `${user.name} - ${day.nombre}`.replace(/[\\/*?[\]:]/g, '').slice(0, 31);
+
+          // Sessions that match this day
+          const daySessions = userSessions.filter(s => s.dayName === day.nombre);
+
+          // Header row: same columns as upload format + one group per session date
+          const baseHeaders = ['Ejercicio', 'Series', 'Repeticiones', 'RPE', 'Descanso (seg)', 'Video', 'Observaciones'];
+          const dateHeaders: string[] = [];
+          daySessions.forEach(s => {
+            const d = format(new Date(s.date), 'dd/MM/yy');
+            for (let i = 0; i < (day.ejercicios[0]?.series || 3); i++) {
+              dateHeaders.push(`${d} Serie ${i + 1}`);
+            }
+            dateHeaders.push(`${d} Nota`);
+          });
+
+          const headerRow = [...baseHeaders, ...dateHeaders];
+          const rows: (string | number)[][] = [headerRow];
+
+          for (const ex of day.ejercicios) {
+            const baseRow: (string | number)[] = [
+              ex.nombre,
+              ex.series,
+              ex.repeticiones,
+              ex.intensidad_rpe.join(', '),
+              ex.descanso_segundos,
+              ex.video,
+              ex.observaciones,
+            ];
+            const sessionCols: (string | number)[] = [];
+            daySessions.forEach(s => {
+              const exData = s.exercises.find(e => e.id === ex.id || e.nombre === ex.nombre);
+              for (let i = 0; i < ex.series; i++) {
+                sessionCols.push(exData?.sets[i] ?? '');
+              }
+              sessionCols.push(s.note ?? '');
+            });
+            rows.push([...baseRow, ...sessionCols]);
+          }
+
+          const ws = XLSX.utils.aoa_to_sheet(rows);
+          // Column widths
+          ws['!cols'] = headerRow.map((h, i) => ({ wch: i < 7 ? (i === 0 ? 28 : 14) : 12 }));
+          XLSX.utils.book_append_sheet(wb, ws, rawName);
+        }
+      }
+
+      if (wb.SheetNames.length === 0) { showToast('No hay datos de entreno para exportar'); setExcelLoading(false); return; }
+
+      const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+      const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url;
+      a.download = `gymtrainer-entrenos-${format(new Date(), 'yyyy-MM-dd')}.xlsx`; a.click();
+      URL.revokeObjectURL(url);
+      showToast('Excel exportado ✓');
+    } catch (e: any) { showToast('Error al exportar: ' + e.message); }
+    setExcelLoading(false);
+  };
+
   const importBackup = async (file: File) => {
     if (!confirm('¿Importar backup? Esto reemplazará todos los datos actuales.')) return;
     setImportLoading(true);
@@ -1329,6 +1495,22 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
                     </div>
                   ))}
                 </div>
+
+                {/* ── Exportar Excel ── */}
+                <button onClick={exportExcel} disabled={excelLoading}
+                  className="w-full rounded-2xl p-4 flex items-center gap-3 active:scale-[0.98] cursor-pointer disabled:opacity-50 transition-all"
+                  style={{ background: 'rgba(34,197,94,0.07)', border: '1px solid rgba(34,197,94,0.22)', textAlign: 'left' }}>
+                  <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}>
+                    {excelLoading ? <Loader size={16} className="animate-spin" /> : <Table size={16} />}
+                  </div>
+                  <div>
+                    <p className="font-black text-sm" style={{ color: 'var(--ink)' }}>Exportar Excel de entrenos</p>
+                    <p className="text-[9px] font-black uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>
+                      {excelLoading ? 'Generando…' : 'Rutina + pesos, series y notas por día'}
+                    </p>
+                  </div>
+                  <FileDown size={14} className="ml-auto flex-shrink-0" style={{ color: 'rgba(34,197,94,0.6)' }} />
+                </button>
 
                 {users.map(u => {
                   const routine = routines[u.id];

@@ -143,6 +143,27 @@ export async function upsertWeight(userId: string, exerciseId: string, sets: str
   if (error) throw error;
 }
 
+// ─── EXERCISE NOTES ────────────────────────────────────────────────────────
+export async function fetchExerciseNotes(userId: string): Promise<Record<string, { text: string; updatedAt: string }>> {
+  const { data, error } = await supabase.from('exercise_notes').select('exercise_id, note, updated_at').eq('user_id', userId);
+  if (error) throw error;
+  const result: Record<string, { text: string; updatedAt: string }> = {};
+  for (const row of data || []) result[row.exercise_id] = { text: row.note, updatedAt: row.updated_at };
+  return result;
+}
+
+export async function upsertExerciseNote(userId: string, exerciseId: string, note: string): Promise<void> {
+  const { error } = await supabase.from('exercise_notes').upsert({
+    user_id: userId, exercise_id: exerciseId, note, updated_at: new Date().toISOString(),
+  }, { onConflict: 'user_id,exercise_id' });
+  if (error) throw error;
+}
+
+export async function deleteExerciseNote(userId: string, exerciseId: string): Promise<void> {
+  const { error } = await supabase.from('exercise_notes').delete().eq('user_id', userId).eq('exercise_id', exerciseId);
+  if (error) throw error;
+}
+
 // ─── FULL BACKUP ───────────────────────────────────────────────────────────
 export async function fetchFullBackup() {
   const [profiles, sessions, weights] = await Promise.all([fetchProfiles(), fetchAllSessions(), fetchAllWeights()]);
