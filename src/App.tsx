@@ -1335,36 +1335,36 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
   const exportExcel = async () => {
     setExcelLoading(true);
     try {
-      // Fetch everything we need
-      const [profiles, sessions] = await Promise.all([fetchProfiles(), fetchAllSessions()]);
+      // fetchAllSessions trae las sesiones de TODOS los usuarios
+      const allSessions = await fetchAllSessions();
       const wb = XLSX.utils.book_new();
 
       for (const user of users) {
         const routine = routines[user.id];
         if (!routine) continue;
-        const userSessions = sessions
+
+        const userSessions = allSessions
           .filter(s => s.userName === user.id)
           .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
         for (const day of routine.dias) {
-          // Sheet name: "NombreUsuario - DíaN" (max 31 chars for Excel)
-          const rawName = `${user.name} - ${day.nombre}`.replace(/[\\/*?[\]:]/g, '').slice(0, 31);
-
-          // Sessions that match this day
           const daySessions = userSessions.filter(s => s.dayName === day.nombre);
 
-          // Header row: same columns as upload format + one group per session date
+          // Máximo de series entre todos los ejercicios del día → define cuántas columnas de serie por sesión
+          const maxSeries = Math.max(...day.ejercicios.map(e => e.series), 1);
+
+          // Cabecera base (mismo formato que el Excel de subida)
           const baseHeaders = ['Ejercicio', 'Series', 'Repeticiones', 'RPE', 'Descanso (seg)', 'Video', 'Observaciones'];
-          const dateHeaders: string[] = [];
+
+          // Una columna por serie + una de nota por cada sesión realizada
+          const sessionHeaders: string[] = [];
           daySessions.forEach(s => {
             const d = format(new Date(s.date), 'dd/MM/yy');
-            for (let i = 0; i < (day.ejercicios[0]?.series || 3); i++) {
-              dateHeaders.push(`${d} Serie ${i + 1}`);
-            }
-            dateHeaders.push(`${d} Nota`);
+            for (let i = 1; i <= maxSeries; i++) sessionHeaders.push(`${d} - Serie ${i}`);
+            sessionHeaders.push(`${d} - Nota sesión`);
           });
 
-          const headerRow = [...baseHeaders, ...dateHeaders];
+          const headerRow = [...baseHeaders, ...sessionHeaders];
           const rows: (string | number)[][] = [headerRow];
 
           for (const ex of day.ejercicios) {
@@ -1374,13 +1374,14 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
               ex.repeticiones,
               ex.intensidad_rpe.join(', '),
               ex.descanso_segundos,
-              ex.video,
-              ex.observaciones,
+              ex.video ?? '',
+              ex.observaciones ?? '',
             ];
             const sessionCols: (string | number)[] = [];
             daySessions.forEach(s => {
               const exData = s.exercises.find(e => e.id === ex.id || e.nombre === ex.nombre);
-              for (let i = 0; i < ex.series; i++) {
+              // Rellenar hasta maxSeries (vacío si el ejercicio tiene menos series o no se registró)
+              for (let i = 0; i < maxSeries; i++) {
                 sessionCols.push(exData?.sets[i] ?? '');
               }
               sessionCols.push(s.note ?? '');
@@ -1388,14 +1389,19 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
             rows.push([...baseRow, ...sessionCols]);
           }
 
+          // Nombre de pestaña máx 31 chars (límite Excel)
+          const sheetName = `${user.name} - ${day.nombre}`.replace(/[\\/*?[\]:]/g, '').slice(0, 31);
           const ws = XLSX.utils.aoa_to_sheet(rows);
-          // Column widths
-          ws['!cols'] = headerRow.map((h, i) => ({ wch: i < 7 ? (i === 0 ? 28 : 14) : 12 }));
-          XLSX.utils.book_append_sheet(wb, ws, rawName);
+          ws['!cols'] = headerRow.map((_, i) => ({ wch: i === 0 ? 30 : i < 7 ? 14 : 13 }));
+          XLSX.utils.book_append_sheet(wb, ws, sheetName);
         }
       }
 
-      if (wb.SheetNames.length === 0) { showToast('No hay datos de entreno para exportar'); setExcelLoading(false); return; }
+      if (wb.SheetNames.length === 0) {
+        showToast('No hay datos de entreno para exportar');
+        setExcelLoading(false);
+        return;
+      }
 
       const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
       const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
