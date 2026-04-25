@@ -5,7 +5,8 @@ import {
   LogOut, Trash2, RefreshCw, TrendingUp, Info, Shield,
   Upload, Plus, FileDown, FileUp, Flame, StickyNote, Star,
   Sun, Moon, Eye, EyeOff, User, Lock, Calendar, History,
-  Table, BarChart2, Loader
+  Table, BarChart2, Loader, Edit2, ChevronDown, ChevronUp,
+  Users, Activity, Filter
 } from 'lucide-react';
 import { ROUTINE_DATA, ADMIN_PASSWORD } from './constants';
 import { Exercise, Routine, WorkoutSession, UserProfile, Theme } from './types';
@@ -14,11 +15,12 @@ import { es } from 'date-fns/locale';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import * as XLSX from 'xlsx';
 import {
-  fetchProfiles, createProfile, updateProfile, deleteProfile,
+  fetchProfileByUsername, fetchProfiles, createProfile, updateProfile, deleteProfile,
   fetchRoutine, upsertRoutine, deleteRoutine,
-  fetchSessions, insertSession, deleteSession as dbDeleteSession,
+  fetchSessions, fetchAllSessions, insertSession, deleteSession as dbDeleteSession,
   fetchWeights, upsertWeight,
   fetchFullBackup, restoreFullBackup,
+  verifyPassword, hashPassword,
 } from './supabase';
 
 // ─── EXCEL PARSER ──────────────────────────────────────────────────────────
@@ -123,6 +125,10 @@ function lsGet<T>(key: string, def: T): T {
 }
 function lsSet(key: string, val: unknown) { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} }
 
+function vibrate(pattern: number | number[]) {
+  try { if ('vibrate' in navigator) navigator.vibrate(pattern); } catch {}
+}
+
 // ─── SHARED UI ─────────────────────────────────────────────────────────────
 function Avatar({ name, src, size = 'md' }: { name: string; src?: string; size?: 'sm' | 'md' | 'lg' }) {
   const [err, setErr] = useState(false);
@@ -214,7 +220,6 @@ export default function App() {
 function UserApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => void }) {
   const [view, setView] = useState<AppView>('login');
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
-  const [users, setUsers] = useState<UserProfile[]>([]);
   const [routine, setRoutine] = useState<Routine>(ROUTINE_DATA);
   const [sessions, setSessions] = useState<WorkoutSession[]>([]);
   const [weights, setWeights] = useState<Record<string, string[]>>({});
@@ -223,11 +228,6 @@ function UserApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => 
 
   const showToast = useCallback((msg: string) => {
     setToast(msg); setTimeout(() => setToast(null), 2500);
-  }, []);
-
-  // Load users on mount for login
-  useEffect(() => {
-    fetchProfiles().then(setUsers).catch(() => {});
   }, []);
 
   const handleLogin = async (user: UserProfile) => {
@@ -279,7 +279,7 @@ function UserApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => 
     <div className="min-h-screen flex flex-col items-center overflow-x-hidden" style={{ background: 'var(--bg)', color: 'var(--ink)' }}>
       <div className="w-full max-w-md min-h-screen flex flex-col relative">
         <AnimatePresence mode="wait">
-          {view === 'login' && <LoginView key="login" users={users} theme={theme} onToggleTheme={onToggleTheme} onLogin={handleLogin} />}
+          {view === 'login' && <LoginView key="login" theme={theme} onToggleTheme={onToggleTheme} onLogin={handleLogin} />}
           {view === 'home' && currentUser && (
             <HomeView key="home" user={currentUser} sessions={sessions} routine={routine}
               theme={theme} onToggleTheme={onToggleTheme}
@@ -290,7 +290,7 @@ function UserApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => 
               weights={weights} onSaveWeight={handleSaveWeight} onFinish={handleFinishWorkout} onBack={() => setView('home')} />
           )}
           {view === 'history' && currentUser && (
-            <HistoryView key="history" sessions={sessions} onBack={() => setView('home')} onDelete={handleDeleteSession} />
+            <HistoryView key="history" sessions={sessions} routine={routine} onBack={() => setView('home')} onDelete={handleDeleteSession} />
           )}
           {view === 'progress' && currentUser && (
             <ProgressView key="progress" sessions={sessions} user={currentUser} routine={routine} onBack={() => setView('home')} />
@@ -303,8 +303,8 @@ function UserApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => 
 }
 
 // ─── LOGIN ─────────────────────────────────────────────────────────────────
-function LoginView({ users, theme, onToggleTheme, onLogin }: {
-  users: UserProfile[]; theme: Theme; onToggleTheme: () => void; onLogin: (u: UserProfile) => void;
+function LoginView({ theme, onToggleTheme, onLogin }: {
+  theme: Theme; onToggleTheme: () => void; onLogin: (u: UserProfile) => void;
 }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -314,11 +314,11 @@ function LoginView({ users, theme, onToggleTheme, onLogin }: {
 
   const handleSubmit = async () => {
     setError(''); setLoading(true);
-    // reload users fresh from DB each login attempt
     try {
-      const fresh = await fetchProfiles();
-      const user = fresh.find(u => u.username.toLowerCase() === username.toLowerCase().trim());
-      if (!user || user.password !== password) { setError('Usuario o contraseña incorrectos'); setLoading(false); return; }
+      const user = await fetchProfileByUsername(username);
+      if (!user) { setError('Usuario o contraseña incorrectos'); setLoading(false); return; }
+      const ok = await verifyPassword(password, user.password);
+      if (!ok) { setError('Usuario o contraseña incorrectos'); setLoading(false); return; }
       await onLogin(user);
     } catch { setError('Error de conexión. Inténtalo de nuevo.'); }
     setLoading(false);
@@ -504,6 +504,8 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
   const [showNote, setShowNote] = useState(false);
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
+  const [editingAllSets, setEditingAllSets] = useState(false);
+  const [totalRestSecs, setTotalRestSecs] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const day = routine.dias[dayIdx];
@@ -515,22 +517,31 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
 
   const startRest = (secs: number) => {
     if (timerRef.current) clearInterval(timerRef.current);
-    setIsResting(true); setRestTime(secs);
+    setIsResting(true); setRestTime(secs); setTotalRestSecs(secs);
     timerRef.current = setInterval(() => {
-      setRestTime(p => { if (p <= 1) { clearInterval(timerRef.current!); setIsResting(false); return 0; } return p - 1; });
+      setRestTime(p => {
+        if (p <= 1) {
+          clearInterval(timerRef.current!);
+          setIsResting(false);
+          try { if ('vibrate' in navigator) navigator.vibrate([200, 100, 200]); } catch {}
+          return 0;
+        }
+        return p - 1;
+      });
     }, 1000);
   };
 
   const skipRest = () => { if (timerRef.current) clearInterval(timerRef.current); setIsResting(false); setRestTime(0); };
 
-  const saveWeight = (val: string) => {
+  const saveWeight = (val: string, overrideIdx?: number) => {
+    const idx = overrideIdx !== undefined ? overrideIdx : currentSet - 1;
     setSessionData(prev => {
       const sets = [...(prev[exercise.id] || Array(exercise.series).fill(''))];
-      while (sets.length <= currentSet - 1) sets.push('');
-      sets[currentSet - 1] = val;
+      while (sets.length <= idx) sets.push('');
+      sets[idx] = val;
       return { ...prev, [exercise.id]: sets };
     });
-    onSaveWeight(exercise.id, currentSet - 1, val);
+    onSaveWeight(exercise.id, idx, val);
   };
 
   const toggleComplete = (id: string) => setCompleted(p => { const n = new Set(p); if (n.has(id)) n.delete(id); else n.add(id); return n; });
@@ -563,9 +574,10 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
   const curW = parseFloat((sessionData[exercise.id] || [])[currentSet - 1] || '');
   const isPR = curW > 0 && curW > pr;
   const prevWeights = weights[exercise.id] || [];
+  const curSets = sessionData[exercise.id] || [];
   const rpe = exercise.intensidad_rpe[currentSet - 1] ?? exercise.intensidad_rpe[0];
   const circ = 2 * Math.PI * 45;
-  const dashOffset = circ - (circ * restTime) / exercise.descanso_segundos;
+  const dashOffset = circ - (circ * restTime) / (totalRestSecs || exercise.descanso_segundos);
 
   return (
     <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
@@ -604,7 +616,7 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
 
         <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
           {day.ejercicios.map((ex, i) => (
-            <button key={ex.id} onClick={() => { setExIdx(i); setCurrentSet(1); skipRest(); }}
+            <button key={ex.id} onClick={() => { setExIdx(i); setCurrentSet(1); skipRest(); setEditingAllSets(false); }}
               className="flex-shrink-0 w-9 h-9 rounded-xl flex items-center justify-center relative text-xs font-black italic"
               style={{ background: i === exIdx ? 'var(--accent)' : completed.has(ex.id) ? 'var(--accent-dim)' : 'var(--surface)', border: `1px solid ${i === exIdx ? 'var(--accent)' : completed.has(ex.id) ? 'var(--accent-mid)' : 'var(--border)'}`, color: i === exIdx ? '#fff' : completed.has(ex.id) ? 'var(--accent)' : 'var(--ink-muted)' }}>
               {i + 1}
@@ -678,8 +690,46 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
                       </span>
                     : pr > 0 ? <span className="text-[9px] font-black" style={{ color: 'var(--ink-dim)' }}>PR: {pr}kg</span> : null}
                 </div>
+                {/* Botón editar series pasadas */}
+                <div className="flex items-center justify-between mb-1">
+                  <span />
+                  <button onClick={() => setEditingAllSets(p => !p)}
+                    className="flex items-center gap-1 text-[9px] font-black uppercase tracking-wider px-2 py-1 rounded-lg"
+                    style={{ background: editingAllSets ? 'var(--accent-dim)' : 'var(--surface2)', border: `1px solid ${editingAllSets ? 'var(--accent-mid)' : 'var(--border)'}`, color: editingAllSets ? 'var(--accent)' : 'var(--ink-muted)', cursor: 'pointer' }}>
+                    <Edit2 size={9} /> Editar series
+                  </button>
+                </div>
                 <WeightInput exerciseId={exercise.id} setIndex={currentSet - 1}
-                  value={(sessionData[exercise.id] || [])[currentSet - 1] || ''} onSave={saveWeight} />
+                  value={curSets[currentSet - 1] || ''} onSave={v => saveWeight(v)} />
+
+                {/* Panel inline para corregir cualquier serie */}
+                {editingAllSets && (
+                  <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }}
+                    className="rounded-xl p-3 space-y-2 mt-1"
+                    style={{ background: 'var(--surface2)', border: '1px solid var(--border)' }}>
+                    <p className="text-[8px] font-black uppercase tracking-widest mb-1" style={{ color: 'var(--ink-muted)' }}>
+                      Editar todas las series
+                    </p>
+                    {Array.from({ length: exercise.series }).map((_, si) => (
+                      <div key={si} className="flex items-center gap-2">
+                        <span className="text-[9px] font-black w-14 flex-shrink-0"
+                          style={{ color: si === currentSet - 1 ? 'var(--accent)' : 'var(--ink-dim)' }}>
+                          Serie {si + 1}{si === currentSet - 1 ? ' ●' : ''}
+                        </span>
+                        <div className="relative flex-1">
+                          <input type="number" step="0.5" inputMode="decimal"
+                            defaultValue={curSets[si] || ''}
+                            onBlur={e => saveWeight(e.target.value, si)}
+                            className="w-full rounded-lg px-3 py-2 text-sm font-black outline-none"
+                            style={{ background: 'var(--surface)', border: `1px solid ${si === currentSet - 1 ? 'var(--accent-mid)' : 'var(--border)'}`, color: 'var(--ink)' }}
+                            placeholder="0.0" />
+                          <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[8px] font-black" style={{ color: 'var(--ink-dim)' }}>kg</span>
+                        </div>
+                      </div>
+                    ))}
+                  </motion.div>
+                )}
+
                 {prevWeights.some(w => w) && (
                   <div>
                     <p className="text-[8px] font-black uppercase tracking-widest mb-1.5" style={{ color: 'var(--ink-dim)' }}>Cargas anteriores</p>
@@ -802,24 +852,54 @@ function WeightInput({ exerciseId, setIndex, value, onSave }: { exerciseId: stri
 }
 
 // ─── HISTORY ───────────────────────────────────────────────────────────────
-function HistoryView({ sessions, onBack, onDelete }: { sessions: WorkoutSession[]; onBack: () => void; onDelete: (id: string) => void }) {
+function HistoryView({ sessions, routine, onBack, onDelete }: {
+  sessions: WorkoutSession[]; routine: Routine; onBack: () => void; onDelete: (id: string) => void;
+}) {
+  const [filterDay, setFilterDay] = useState<string>('all');
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+
+  const dayNames = Array.from(new Set(sessions.map(s => s.dayName)));
+  const visible = filterDay === 'all' ? sessions : sessions.filter(s => s.dayName === filterDay);
+
   return (
     <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }}
       className="flex-1 flex flex-col p-6 pt-10">
-      <header className="flex items-center gap-4 mb-8">
+      <header className="flex items-center gap-4 mb-4">
         <button onClick={onBack} className="w-9 h-9 rounded-full flex items-center justify-center"
           style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--ink-muted)', cursor: 'pointer' }}>
           <ChevronLeft size={16} />
         </button>
         <h2 className="text-3xl font-black italic uppercase tracking-tight" style={{ color: 'var(--ink)' }}>Historial</h2>
+        <span className="ml-auto text-[10px] font-black uppercase tracking-widest" style={{ color: 'var(--ink-dim)' }}>
+          {visible.length} sesión{visible.length !== 1 ? 'es' : ''}
+        </span>
       </header>
+
+      {/* Filtro por día */}
+      {dayNames.length > 1 && (
+        <div className="flex gap-1.5 mb-5 overflow-x-auto no-scrollbar pb-1">
+          <button onClick={() => setFilterDay('all')}
+            className="flex-shrink-0 flex items-center gap-1 px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-wider"
+            style={{ background: filterDay === 'all' ? 'var(--accent)' : 'var(--surface)', border: `1px solid ${filterDay === 'all' ? 'var(--accent)' : 'var(--border)'}`, color: filterDay === 'all' ? '#fff' : 'var(--ink-muted)' }}>
+            <Filter size={9} /> Todos
+          </button>
+          {dayNames.map(d => (
+            <button key={d} onClick={() => setFilterDay(d)}
+              className="flex-shrink-0 px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-wider"
+              style={{ background: filterDay === d ? 'var(--accent)' : 'var(--surface)', border: `1px solid ${filterDay === d ? 'var(--accent)' : 'var(--border)'}`, color: filterDay === d ? '#fff' : 'var(--ink-muted)' }}>
+              {d.split('–')[1]?.trim() || d}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="space-y-5 flex-1 overflow-y-auto no-scrollbar pb-10">
-        {sessions.length === 0
+        {visible.length === 0
           ? <div className="flex flex-col items-center justify-center py-24" style={{ color: 'var(--ink-dim)' }}>
               <History size={56} className="mb-5 opacity-20" />
               <p className="text-[10px] font-black uppercase tracking-[0.3em]">Sin registros aún</p>
             </div>
-          : sessions.map(s => (
+          : visible.map(s => (
             <div key={s.id} className="card-xl overflow-hidden">
               <div className="p-5 flex justify-between items-start" style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface2)' }}>
                 <div>
@@ -832,12 +912,28 @@ function HistoryView({ sessions, onBack, onDelete }: { sessions: WorkoutSession[
                     Vol: <span style={{ color: 'var(--ink-muted)' }}>{calcVolume(s).toFixed(0)} kg</span>
                   </p>
                 </div>
-                <button onClick={() => onDelete(s.id)} className="p-2 transition-colors"
-                  style={{ color: 'var(--ink-dim)', background: 'none', border: 'none', cursor: 'pointer' }}
-                  onMouseOver={e => e.currentTarget.style.color = 'var(--red)'}
-                  onMouseOut={e => e.currentTarget.style.color = 'var(--ink-dim)'}>
-                  <Trash2 size={16} />
-                </button>
+                {/* Confirmación en 2 pasos antes de borrar */}
+                {pendingDelete === s.id ? (
+                  <div className="flex flex-col gap-1.5 flex-shrink-0">
+                    <button onClick={() => { onDelete(s.id); setPendingDelete(null); }}
+                      className="px-3 py-1.5 rounded-lg text-[8px] font-black uppercase tracking-wider cursor-pointer"
+                      style={{ background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.3)', color: 'var(--red)' }}>
+                      Borrar
+                    </button>
+                    <button onClick={() => setPendingDelete(null)}
+                      className="px-3 py-1.5 rounded-lg text-[8px] font-black uppercase tracking-wider cursor-pointer"
+                      style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--ink-muted)' }}>
+                      Cancelar
+                    </button>
+                  </div>
+                ) : (
+                  <button onClick={() => setPendingDelete(s.id)} className="p-2 transition-colors flex-shrink-0"
+                    style={{ color: 'var(--ink-dim)', background: 'none', border: 'none', cursor: 'pointer' }}
+                    onMouseOver={e => e.currentTarget.style.color = 'var(--red)'}
+                    onMouseOut={e => e.currentTarget.style.color = 'var(--ink-dim)'}>
+                    <Trash2 size={16} />
+                  </button>
+                )}
               </div>
               <div className="p-5 space-y-3">
                 {s.exercises.map((ex, i) => (
@@ -976,11 +1072,16 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
   const [subview, setSubview] = useState<AdminSubview>('dashboard');
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [routines, setRoutines] = useState<Record<string, Routine | null>>({});
+  const [allSessions, setAllSessions] = useState<WorkoutSession[]>([]);
   const [loading, setLoading] = useState(false);
   const [uploadedRoutine, setUploadedRoutine] = useState<Routine | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadLoading, setUploadLoading] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState<Record<number,boolean>>({});
   const [sheetUrl, setSheetUrl] = useState('');
+  const [editRoutine, setEditRoutine] = useState<Routine | null>(null);
+  const [editRoutineUid, setEditRoutineUid] = useState<string | null>(null);
+  const [assignAll, setAssignAll] = useState(false);
   const [addForm, setAddForm] = useState(false);
   const [newName, setNewName] = useState('');
   const [newUsername, setNewUsername] = useState('');
@@ -999,8 +1100,9 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
   const loadData = async () => {
     setLoading(true);
     try {
-      const profiles = await fetchProfiles();
+      const [profiles, sessions] = await Promise.all([fetchProfiles(), fetchAllSessions()]);
       setUsers(profiles);
+      setAllSessions(sessions);
       const rMap: Record<string, Routine | null> = {};
       await Promise.all(profiles.map(async p => { rMap[p.id] = await fetchRoutine(p.id); }));
       setRoutines(rMap);
@@ -1008,33 +1110,79 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
     setLoading(false);
   };
 
-  const submitLogin = () => {
-    if (pw === ADMIN_PASSWORD) { setAuthed(true); setPwErr(false); loadData(); }
+  const submitLogin = async () => {
+    const ok = await verifyPassword(pw, ADMIN_PASSWORD).catch(() => pw === ADMIN_PASSWORD);
+    if (ok) { setAuthed(true); setPwErr(false); loadData(); }
     else { setPwErr(true); setTimeout(() => setPwErr(false), 800); }
   };
 
   const handleFile = async (file: File) => {
     if (!file.name.match(/\.xlsx?$/i)) { setUploadError('Solo se admiten archivos .xlsx'); return; }
     setUploadError(null); setUploadedRoutine(null); setUploadLoading(true);
-    try { setUploadedRoutine(await parseExcelToRoutine(file)); }
+    try { setUploadedRoutine(await parseExcelToRoutine(file)); setPreviewOpen({}); }
     catch (err: any) { setUploadError(err.message); }
     setUploadLoading(false);
   };
 
+  const routineToSave = () =>
+    sheetUrl.trim() ? { ...uploadedRoutine!, sheetUrl: sheetUrl.trim() } : uploadedRoutine!;
+
   const assignRoutine = async (userId: string) => {
-    // embed sheetUrl into the routine before saving
-    const routineToSave = sheetUrl.trim() ? { ...uploadedRoutine!, sheetUrl: sheetUrl.trim() } : uploadedRoutine!;
     if (!uploadedRoutine) return;
     try {
-      await upsertRoutine(userId, routineToSave);
-      setRoutines(prev => ({ ...prev, [userId]: routineToSave }));
-      setUploadedRoutine(null);
-      setSheetUrl('');
-      if (fileRef.current) fileRef.current.value = '';
-      const userName = users.find(u => u.id === userId)?.name || userId;
-      showToast(`Rutina asignada a ${userName} ✓`);
-      setSubview('dashboard');
+      const r = routineToSave();
+      await upsertRoutine(userId, r);
+      setRoutines(prev => ({ ...prev, [userId]: r }));
+      showToast(`Rutina asignada a ${users.find(u => u.id === userId)?.name || userId} ✓`);
     } catch (e: any) { showToast('Error al asignar: ' + e.message); }
+  };
+
+  const assignRoutineToAll = async () => {
+    if (!uploadedRoutine) return;
+    const r = routineToSave();
+    let ok = 0;
+    for (const u of users) {
+      try { await upsertRoutine(u.id, r); setRoutines(prev => ({ ...prev, [u.id]: r })); ok++; } catch {}
+    }
+    showToast(`Rutina asignada a ${ok} usuarios ✓`);
+    setUploadedRoutine(null); setSheetUrl(''); setAssignAll(false);
+    if (fileRef.current) fileRef.current.value = '';
+    setSubview('dashboard');
+  };
+
+  const openEditRoutine = (uid: string) => {
+    const r = routines[uid] || ROUTINE_DATA;
+    setEditRoutine(JSON.parse(JSON.stringify(r)));
+    setEditRoutineUid(uid);
+  };
+
+  const saveEditRoutine = async () => {
+    if (!editRoutine || !editRoutineUid) return;
+    try {
+      await upsertRoutine(editRoutineUid, editRoutine);
+      setRoutines(prev => ({ ...prev, [editRoutineUid!]: editRoutine }));
+      showToast('Rutina actualizada ✓');
+      setEditRoutine(null); setEditRoutineUid(null);
+    } catch (e: any) { showToast('Error: ' + e.message); }
+  };
+
+  const patchExercise = (di: number, ei: number, field: keyof Exercise, val: any) => {
+    if (!editRoutine) return;
+    const r = JSON.parse(JSON.stringify(editRoutine)) as Routine;
+    (r.dias[di].ejercicios[ei] as any)[field] = val;
+    setEditRoutine(r);
+  };
+
+  const getUserStats = (uid: string) => {
+    const us = allSessions.filter(s => s.userName === uid);
+    const streak = calcStreak(us);
+    const vol = Math.round(us.reduce((t, s) => t + calcVolume(s), 0));
+    const last = us[0] ?? null;
+    const now = new Date();
+    const startMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const thisMonth = us.filter(s => new Date(s.date) >= startMonth).length;
+    const daysSince = last ? Math.floor((now.getTime() - new Date(last.date).getTime()) / 86400000) : null;
+    return { total: us.length, streak, vol, last, thisMonth, daysSince };
   };
 
   const resetRoutine = async (userId: string) => {
@@ -1166,45 +1314,97 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
                 <User size={48} className="mb-4 opacity-20" />
                 <p className="text-[10px] font-black uppercase tracking-widest">Sin usuarios. Ve a Usuarios.</p>
               </div>
-            : users.map(u => {
-                const routine = routines[u.id];
-                const hasCustom = routine !== null && routine !== undefined;
-                const display = routine || ROUTINE_DATA;
-                return (
-                  <div key={u.id} className="card-xl overflow-hidden">
-                    <div className="p-4 flex items-center gap-3" style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface2)' }}>
-                      <Avatar name={u.name} src={u.avatarUrl} size="sm" />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <h3 className="font-black" style={{ color: 'var(--ink)' }}>{u.name}</h3>
-                          <span className="text-[8px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded"
-                            style={{ background: hasCustom ? 'var(--accent-dim)' : 'var(--surface)', border: `1px solid ${hasCustom ? 'var(--accent-mid)' : 'var(--border)'}`, color: hasCustom ? 'var(--accent)' : 'var(--ink-muted)' }}>
-                            {hasCustom ? 'Rutina personalizada' : 'Rutina por defecto'}
-                          </span>
+            : <>
+                {/* ── Resumen global ── */}
+                <div className="grid grid-cols-3 gap-2 mb-1">
+                  {[
+                    { icon: <Users size={14} />, val: users.length, label: 'Alumnos' },
+                    { icon: <Activity size={14} />, val: allSessions.length, label: 'Sesiones' },
+                    { icon: <TrendingUp size={14} />, val: `${Math.round(allSessions.reduce((t,s)=>t+calcVolume(s),0)/1000)}k`, label: 'kg Vol.' },
+                  ].map(({ icon, val, label }) => (
+                    <div key={label} className="rounded-2xl p-3 text-center" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                      <div className="flex justify-center mb-1" style={{ color: '#a78bfa' }}>{icon}</div>
+                      <p className="text-lg font-black italic" style={{ color: 'var(--ink)' }}>{val}</p>
+                      <p className="text-[7px] font-black uppercase tracking-wider" style={{ color: 'var(--ink-dim)' }}>{label}</p>
+                    </div>
+                  ))}
+                </div>
+
+                {users.map(u => {
+                  const routine = routines[u.id];
+                  const hasCustom = !!routine;
+                  const display = routine || ROUTINE_DATA;
+                  const st = getUserStats(u.id);
+                  const inactive = st.daysSince !== null && st.daysSince > 7;
+                  return (
+                    <div key={u.id} className="card-xl overflow-hidden">
+                      {/* Cabecera usuario */}
+                      <div className="p-4 flex items-center gap-3" style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface2)' }}>
+                        <div className="relative">
+                          <Avatar name={u.name} src={u.avatarUrl} size="sm" />
+                          {inactive && <div className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full" style={{ background: 'var(--red)', border: '1.5px solid var(--bg)' }} title="Más de 7 días sin entrenar" />}
                         </div>
-                        <p className="text-[9px] mt-0.5 truncate" style={{ color: 'var(--ink-muted)' }}>@{u.username} · {display.nombre}</p>
-                        {hasCustom && <p className="text-[8px] mt-0.5" style={{ color: 'var(--ink-dim)' }}>{display.dias.length} días · {display.dias.reduce((t, d) => t + d.ejercicios.length, 0)} ejercicios</p>}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h3 className="font-black" style={{ color: 'var(--ink)' }}>{u.name}</h3>
+                            <span className="text-[8px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded"
+                              style={{ background: hasCustom ? 'var(--accent-dim)' : 'var(--surface)', border: `1px solid ${hasCustom ? 'var(--accent-mid)' : 'var(--border)'}`, color: hasCustom ? 'var(--accent)' : 'var(--ink-muted)' }}>
+                              {hasCustom ? 'Rutina propia' : 'Por defecto'}
+                            </span>
+                          </div>
+                          <p className="text-[9px] mt-0.5 truncate" style={{ color: 'var(--ink-muted)' }}>@{u.username} · {display.nombre}</p>
+                        </div>
+                      </div>
+
+                      {/* Stats del alumno */}
+                      <div className="grid grid-cols-4 border-b" style={{ borderColor: 'var(--border)' }}>
+                        {[
+                          { label: 'Sesiones', val: st.total },
+                          { label: 'Este mes', val: st.thisMonth },
+                          { label: 'Racha', val: st.streak ? `${st.streak}d` : '—' },
+                          { label: 'Última', val: st.daysSince === null ? '—' : st.daysSince === 0 ? 'Hoy' : `Hace ${st.daysSince}d` },
+                        ].map(({ label, val }, i) => (
+                          <div key={label} className="py-3 text-center" style={{ borderRight: i < 3 ? `1px solid var(--border)` : 'none' }}>
+                            <p className="text-xs font-black italic" style={{ color: inactive && label === 'Última' ? 'var(--red)' : 'var(--ink)' }}>{val}</p>
+                            <p className="text-[7px] font-black uppercase tracking-wider" style={{ color: 'var(--ink-dim)' }}>{label}</p>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="px-4 py-2" style={{ borderBottom: '1px solid var(--border)', background: 'rgba(0,0,0,0.08)' }}>
+                        <span className="text-[9px] font-black" style={{ color: 'var(--ink-dim)' }}>
+                          Vol. total: <span style={{ color: 'var(--ink-muted)' }}>{st.vol.toLocaleString('es')} kg</span>
+                          {st.last && <span className="ml-3">Última sesión: <span style={{ color: 'var(--ink-muted)' }}>{format(new Date(st.last.date), 'dd MMM', { locale: es })}</span></span>}
+                        </span>
+                      </div>
+
+                      {/* Acciones */}
+                      <div className="px-4 py-3 flex gap-2">
+                        <button onClick={() => { setSubview('upload'); setUploadedRoutine(null); setUploadError(null); }}
+                          className="flex-1 py-2.5 text-[9px] font-black uppercase tracking-widest rounded-xl cursor-pointer"
+                          style={{ background: 'var(--accent-dim)', border: '1px solid var(--accent-mid)', color: 'var(--accent)' }}>
+                          {hasCustom ? 'Cambiar' : 'Asignar rutina'}
+                        </button>
+                        {hasCustom && (
+                          <button onClick={() => openEditRoutine(u.id)}
+                            className="flex-1 py-2.5 text-[9px] font-black uppercase tracking-widest rounded-xl cursor-pointer"
+                            style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--ink-muted)' }}>
+                            <Edit2 size={10} className="inline mr-1" />Editar
+                          </button>
+                        )}
+                        {hasCustom && (
+                          <button onClick={() => resetRoutine(u.id)}
+                            className="py-2.5 px-3 rounded-xl cursor-pointer"
+                            style={{ background: 'none', border: '1px solid var(--border)', color: 'var(--ink-dim)' }}
+                            onMouseOver={e => { e.currentTarget.style.borderColor = 'var(--red)'; e.currentTarget.style.color = 'var(--red)'; }}
+                            onMouseOut={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--ink-dim)'; }}>
+                            <Trash2 size={12} />
+                          </button>
+                        )}
                       </div>
                     </div>
-                    <div className="px-4 py-3 flex gap-2">
-                      <button onClick={() => { setSubview('upload'); setUploadedRoutine(null); setUploadError(null); }}
-                        className="flex-1 py-2.5 text-[9px] font-black uppercase tracking-widest rounded-xl cursor-pointer transition-all"
-                        style={{ background: 'var(--accent-dim)', border: '1px solid var(--accent-mid)', color: 'var(--accent)' }}>
-                        {hasCustom ? 'Cambiar rutina' : 'Asignar rutina'}
-                      </button>
-                      {hasCustom && (
-                        <button onClick={() => resetRoutine(u.id)}
-                          className="flex-1 py-2.5 text-[9px] font-black uppercase tracking-widest rounded-xl cursor-pointer transition-all"
-                          style={{ background: 'none', border: '1px solid var(--border)', color: 'var(--ink-muted)' }}
-                          onMouseOver={e => { e.currentTarget.style.borderColor = 'var(--red)'; e.currentTarget.style.color = 'var(--red)'; }}
-                          onMouseOut={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--ink-muted)'; }}>
-                          Quitar rutina
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })
+                  );
+                })}
+              </>
         )}
 
         {subview === 'upload' && <>
@@ -1237,18 +1437,39 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
           )}
 
           {uploadedRoutine && <>
-            <div className="card-xl p-5" style={{ border: '1px solid var(--accent-mid)', background: 'var(--accent-dim)' }}>
-              <div className="flex items-center gap-2 mb-2">
+            {/* ── Acordeón preview ── */}
+            <div className="card-xl overflow-hidden" style={{ border: '1px solid var(--accent-mid)' }}>
+              <div className="p-4 flex items-center gap-3" style={{ background: 'var(--accent-dim)' }}>
                 <div className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: 'var(--accent)', color: '#fff' }}><Check size={12} style={{ strokeWidth: 4 }} /></div>
-                <span className="font-black text-sm" style={{ color: 'var(--accent)' }}>{uploadedRoutine.nombre}</span>
+                <span className="font-black text-sm flex-1" style={{ color: 'var(--accent)' }}>{uploadedRoutine.nombre}</span>
+                <span className="text-[9px] font-black" style={{ color: 'var(--ink-muted)' }}>
+                  {uploadedRoutine.dias.length} días · {uploadedRoutine.dias.reduce((t, d) => t + d.ejercicios.length, 0)} ej.
+                </span>
               </div>
-              <p className="text-[9px] font-black uppercase tracking-widest mb-3" style={{ color: 'var(--ink-muted)' }}>
-                {uploadedRoutine.dias.length} día{uploadedRoutine.dias.length !== 1 ? 's' : ''} · {uploadedRoutine.dias.reduce((t, d) => t + d.ejercicios.length, 0)} ejercicios
-              </p>
-              {uploadedRoutine.dias.map(d => (
-                <div key={d.dia} className="rounded-xl p-3 mb-2" style={{ background: 'rgba(0,0,0,0.2)' }}>
-                  <p className="font-black text-xs mb-1" style={{ color: 'var(--ink)' }}>{d.nombre}</p>
-                  <p className="text-[9px] leading-relaxed" style={{ color: 'var(--ink-muted)' }}>{d.ejercicios.map(e => e.nombre).join(' · ')}</p>
+              {uploadedRoutine.dias.map((d, di) => (
+                <div key={d.dia} style={{ borderTop: '1px solid var(--border)' }}>
+                  <button className="w-full px-4 py-3 flex items-center justify-between text-left cursor-pointer"
+                    style={{ background: 'none', border: 'none' }}
+                    onClick={() => setPreviewOpen(p => ({ ...p, [di]: !p[di] }))}>
+                    <span className="font-black text-sm" style={{ color: 'var(--ink)' }}>{d.nombre}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[8px] font-black uppercase tracking-wider" style={{ color: 'var(--ink-muted)' }}>{d.ejercicios.length} ejercicios</span>
+                      {previewOpen[di] ? <ChevronUp size={14} style={{ color: 'var(--ink-muted)' }} /> : <ChevronDown size={14} style={{ color: 'var(--ink-muted)' }} />}
+                    </div>
+                  </button>
+                  {previewOpen[di] && (
+                    <div className="px-4 pb-3 space-y-1">
+                      {d.ejercicios.map((ex, ei) => (
+                        <div key={ei} className="flex items-center justify-between gap-2 rounded-lg px-3 py-2"
+                          style={{ background: 'rgba(0,0,0,0.12)' }}>
+                          <span className="text-xs font-bold flex-1 truncate" style={{ color: 'var(--ink-muted)' }}>{ex.nombre}</span>
+                          <span className="text-[8px] font-black flex-shrink-0" style={{ color: 'var(--ink-dim)' }}>
+                            {ex.series}×{ex.repeticiones} · RPE {ex.intensidad_rpe[0]} · {ex.descanso_segundos}s
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -1256,42 +1477,53 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
             {/* Sheet URL */}
             <div>
               <p className="text-[9px] font-black uppercase tracking-widest mb-2" style={{ color: 'var(--ink-muted)' }}>URL de hoja de cálculo (opcional)</p>
-              <input
-                value={sheetUrl}
-                onChange={e => setSheetUrl(e.target.value)}
-                placeholder="https://docs.google.com/spreadsheets/..."
-                className="input"
-              />
-              <p className="text-[9px] mt-1.5" style={{ color: 'var(--ink-dim)' }}>
-                Si la añades, el botón "Sheet" del usuario abrirá esta hoja. Si no, no se mostrará el botón.
-              </p>
+              <input value={sheetUrl} onChange={e => setSheetUrl(e.target.value)}
+                placeholder="https://docs.google.com/spreadsheets/..." className="input" />
             </div>
 
+            {/* ── Asignación: individual o masiva ── */}
             <div>
-              <p className="text-[9px] font-black uppercase tracking-widest mb-3" style={{ color: 'var(--ink-muted)' }}>Asignar a:</p>
-              {users.length === 0
-                ? <p className="text-sm" style={{ color: 'var(--ink-dim)' }}>No hay usuarios. Créalos primero en Usuarios.</p>
-                : users.map(u => (
-                  <button key={u.id} onClick={() => assignRoutine(u.id)}
-                    className="w-full rounded-2xl px-4 py-4 flex items-center justify-between mb-2 transition-all active:scale-[0.98] cursor-pointer"
-                    style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
-                    onMouseOver={e => e.currentTarget.style.borderColor = 'var(--accent)'}
-                    onMouseOut={e => e.currentTarget.style.borderColor = 'var(--border)'}>
-                    <div className="flex items-center gap-3">
-                      <Avatar name={u.name} src={u.avatarUrl} size="sm" />
-                      <div className="text-left">
-                        <p className="font-black" style={{ color: 'var(--ink)' }}>{u.name}</p>
-                        <p className="text-[9px]" style={{ color: 'var(--ink-muted)' }}>
-                          @{u.username}{routines[u.id] ? ' · reemplazará rutina actual' : ''}
-                        </p>
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-[9px] font-black uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>Asignar a:</p>
+                <button onClick={() => setAssignAll(p => !p)}
+                  className="flex items-center gap-1 text-[9px] font-black uppercase tracking-wider px-2 py-1 rounded-lg cursor-pointer"
+                  style={{ background: assignAll ? 'var(--accent)' : 'var(--surface2)', border: '1px solid var(--border)', color: assignAll ? '#fff' : 'var(--ink-muted)' }}>
+                  <Users size={10} /> Todos
+                </button>
+              </div>
+
+              {assignAll ? (
+                <button onClick={assignRoutineToAll}
+                  className="w-full rounded-2xl px-4 py-4 flex items-center justify-center gap-3 cursor-pointer active:scale-[0.98]"
+                  style={{ background: 'var(--accent)', border: 'none', color: '#fff' }}>
+                  <Users size={16} />
+                  <span className="font-black">Asignar a todos los alumnos ({users.length})</span>
+                </button>
+              ) : (
+                users.length === 0
+                  ? <p className="text-sm" style={{ color: 'var(--ink-dim)' }}>No hay usuarios. Créalos primero.</p>
+                  : users.map(u => (
+                    <button key={u.id} onClick={() => assignRoutine(u.id)}
+                      className="w-full rounded-2xl px-4 py-4 flex items-center justify-between mb-2 active:scale-[0.98] cursor-pointer"
+                      style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
+                      onMouseOver={e => e.currentTarget.style.borderColor = 'var(--accent)'}
+                      onMouseOut={e => e.currentTarget.style.borderColor = 'var(--border)'}>
+                      <div className="flex items-center gap-3">
+                        <Avatar name={u.name} src={u.avatarUrl} size="sm" />
+                        <div className="text-left">
+                          <p className="font-black" style={{ color: 'var(--ink)' }}>{u.name}</p>
+                          <p className="text-[9px]" style={{ color: 'var(--ink-muted)' }}>
+                            @{u.username}{routines[u.id] ? ' · reemplazará rutina actual' : ''}
+                          </p>
+                        </div>
                       </div>
-                    </div>
-                    <ArrowRight size={16} style={{ color: 'var(--ink-dim)' }} />
-                  </button>
-                ))}
+                      <ArrowRight size={16} style={{ color: 'var(--ink-dim)' }} />
+                    </button>
+                  ))
+              )}
             </div>
 
-            <button onClick={() => { setUploadedRoutine(null); setUploadError(null); setSheetUrl(''); if (fileRef.current) fileRef.current.value = ''; }}
+            <button onClick={() => { setUploadedRoutine(null); setUploadError(null); setSheetUrl(''); setAssignAll(false); if (fileRef.current) fileRef.current.value = ''; }}
               className="btn-secondary">Cancelar y subir otro Excel</button>
           </>}
 
@@ -1423,6 +1655,89 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
         </>}
 
       </div>
+
+      {/* ── Modal editor inline de rutina ── */}
+      <AnimatePresence>
+        {editRoutine && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[300] flex items-end justify-center"
+            style={{ background: 'rgba(0,0,0,0.82)', backdropFilter: 'blur(8px)' }}>
+            <motion.div initial={{ y: 80, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 80, opacity: 0 }}
+              className="w-full max-w-md rounded-t-[2rem] flex flex-col"
+              style={{ background: 'var(--bg)', maxHeight: '88vh', border: '1px solid var(--border)' }}>
+              {/* Header */}
+              <div className="flex items-center justify-between px-5 pt-5 pb-3" style={{ borderBottom: '1px solid var(--border)' }}>
+                <div>
+                  <h3 className="text-lg font-black italic" style={{ color: 'var(--ink)' }}>Editar rutina</h3>
+                  <p className="text-[9px] font-black uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>
+                    {users.find(u => u.id === editRoutineUid)?.name}
+                  </p>
+                </div>
+                <button onClick={() => { setEditRoutine(null); setEditRoutineUid(null); }}
+                  className="w-8 h-8 rounded-full flex items-center justify-center"
+                  style={{ background: 'var(--surface2)', border: 'none', color: 'var(--ink-muted)', cursor: 'pointer' }}>
+                  <X size={14} />
+                </button>
+              </div>
+
+              {/* Body */}
+              <div className="flex-1 overflow-y-auto px-5 py-4 no-scrollbar space-y-5">
+                {editRoutine.dias.map((day, di) => (
+                  <div key={di}>
+                    <p className="text-[9px] font-black uppercase tracking-widest mb-2" style={{ color: 'var(--accent)' }}>{day.nombre}</p>
+                    <div className="space-y-2">
+                      {day.ejercicios.map((ex, ei) => (
+                        <div key={ei} className="rounded-2xl p-4 space-y-3" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                          <p className="font-black text-sm" style={{ color: 'var(--ink)' }}>{ex.nombre}</p>
+                          <div className="grid grid-cols-3 gap-2">
+                            {/* Reps */}
+                            <div>
+                              <p className="text-[7px] font-black uppercase tracking-wider mb-1" style={{ color: 'var(--ink-dim)' }}>Reps</p>
+                              <input defaultValue={ex.repeticiones}
+                                onBlur={e => patchExercise(di, ei, 'repeticiones', e.target.value)}
+                                className="w-full rounded-lg px-2 py-1.5 text-xs font-bold outline-none"
+                                style={{ background: 'var(--surface2)', border: '1px solid var(--border)', color: 'var(--ink)' }} />
+                            </div>
+                            {/* Descanso */}
+                            <div>
+                              <p className="text-[7px] font-black uppercase tracking-wider mb-1" style={{ color: 'var(--ink-dim)' }}>Descanso (s)</p>
+                              <input type="number" defaultValue={ex.descanso_segundos}
+                                onBlur={e => patchExercise(di, ei, 'descanso_segundos', parseInt(e.target.value) || 120)}
+                                className="w-full rounded-lg px-2 py-1.5 text-xs font-bold outline-none"
+                                style={{ background: 'var(--surface2)', border: '1px solid var(--border)', color: 'var(--ink)' }} />
+                            </div>
+                            {/* RPE */}
+                            <div>
+                              <p className="text-[7px] font-black uppercase tracking-wider mb-1" style={{ color: 'var(--ink-dim)' }}>RPE</p>
+                              <input defaultValue={ex.intensidad_rpe.join(',')}
+                                onBlur={e => {
+                                  const v = e.target.value;
+                                  const arr = v.includes(',')
+                                    ? v.split(',').map(x => parseInt(x.trim()) || 8)
+                                    : [parseInt(v) || 8];
+                                  patchExercise(di, ei, 'intensidad_rpe', arr);
+                                }}
+                                className="w-full rounded-lg px-2 py-1.5 text-xs font-bold outline-none"
+                                style={{ background: 'var(--surface2)', border: '1px solid var(--border)', color: 'var(--ink)' }} />
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Footer */}
+              <div className="flex gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
+                <button onClick={saveEditRoutine} className="btn-accent flex-1">Guardar cambios</button>
+                <button onClick={() => { setEditRoutine(null); setEditRoutineUid(null); }} className="btn-secondary flex-1">Cancelar</button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <AnimatePresence>{toast && <Toast msg={toast} />}</AnimatePresence>
     </div>
   );
