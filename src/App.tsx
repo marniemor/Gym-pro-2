@@ -63,7 +63,7 @@ async function parseExcelToRoutine(file: File): Promise<Routine> {
               ? rpeRaw.split(',').map(r => parseInt(r.trim()) || 8)
               : [parseInt(rpeRaw) || 8];
             while (intensidad_rpe.length < series) intensidad_rpe.push(intensidad_rpe[intensidad_rpe.length - 1]);
-            ejercicios.push({ id: `xl_${si}_${i}_${Date.now()}`, nombre, series, repeticiones, intensidad_rpe, descanso_segundos, video, observaciones });
+            ejercicios.push({ id: `xl_${si}_${i}`, nombre, series, repeticiones, intensidad_rpe, descanso_segundos, video, observaciones });
           }
           if (ejercicios.length > 0) routine.dias.push({ dia: si + 1, nombre: `Día ${si + 1} – ${sheetName}`, ejercicios });
         });
@@ -541,10 +541,10 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
 
   // Mostrar aviso de nota cuando cambia el ejercicio o cuando cargan las notas
   useEffect(() => {
-    if (!exercise) return;
+    if (!exercise?.id) return;
     const saved = exerciseNotes[exercise.id];
     if (!saved) return;
-    if (alertShownFor.has(exercise.id)) return; // ya mostrado en esta sesión
+    if (alertShownFor.has(exercise.id)) return;
     setShowExNoteAlert(true);
     setAlertShownFor(prev => new Set(prev).add(exercise.id));
     setShowExNote(false);
@@ -1343,29 +1343,32 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
     try {
       const wb = XLSX.utils.book_new();
       for (const user of users) {
-        const routine = routines[user.id];
-        if (!routine) continue;
+        const routine = routines[user.id] || ROUTINE_DATA;
         for (let di = 0; di < routine.dias.length; di++) {
           const h = buildHistorial(user.id, di);
           if (!h || h.sessions.length === 0) continue;
           const { day, sessions } = h;
-          const baseHeaders = ['Ejercicio', 'Series programadas'];
+          const baseHeaders = ['Ejercicio', 'Series'];
           const sessionHeaders: string[] = [];
-          sessions.forEach(s => {
-            const d = format(new Date(s.date), 'dd/MM/yy');
-            sessionHeaders.push(`${d} — Pesos`);
-            sessionHeaders.push(`${d} — Nota`);
-          });
+          sessions.forEach(s => { sessionHeaders.push(format(new Date(s.date), 'dd/MM/yy')); });
           const rows: (string | number)[][] = [[...baseHeaders, ...sessionHeaders]];
+          // Primera fila: nota de sesión
+          const noteRow: (string | number)[] = ['Nota sesión', ''];
+          sessions.forEach(s => noteRow.push(s.note ?? ''));
+          rows.push(noteRow);
+          // Filas de ejercicios (solo los que tienen pesos en alguna sesión)
           for (const ex of day.ejercicios) {
+            const hasData = sessions.some(s => {
+              const exData = s.exercises.find(e => e.id === ex.id || e.nombre === ex.nombre);
+              return exData && exData.sets.some(Boolean);
+            });
+            if (!hasData) continue;
             const baseRow: (string | number)[] = [ex.nombre, ex.series];
-            const sessionCols: (string | number)[] = [];
             sessions.forEach(s => {
               const exData = s.exercises.find(e => e.id === ex.id || e.nombre === ex.nombre);
-              sessionCols.push(exData?.sets.filter(Boolean).join(' / ') ?? '—');
-              sessionCols.push(s.note ?? '');
+              baseRow.push(exData?.sets.filter(Boolean).join(' / ') ?? '—');
             });
-            rows.push([...baseRow, ...sessionCols]);
+            rows.push(baseRow);
           }
           const sheetName = `${user.name} - ${day.nombre}`.replace(/[\\/*?[\]:]/g, '').slice(0, 31);
           const ws = XLSX.utils.aoa_to_sheet(rows);
@@ -1625,41 +1628,45 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
                           <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: 'var(--ink-dim)' }}>Sin sesiones registradas para este día</p>
                         </div>
                       : <div className="overflow-x-auto rounded-2xl" style={{ border: '1px solid var(--border)' }}>
-                          <table className="w-full text-[10px]" style={{ borderCollapse: 'collapse', minWidth: 400 + h.sessions.length * 180 }}>
+                          <table className="w-full text-[10px]" style={{ borderCollapse: 'collapse', minWidth: 300 + h.sessions.length * 140 }}>
                             <thead>
-                              <tr style={{ background: 'var(--surface2)', borderBottom: '2px solid var(--border)' }}>
+                              <tr style={{ background: 'var(--surface2)', borderBottom: '1px solid var(--border)' }}>
                                 <th className="text-left px-3 py-3 font-black uppercase tracking-wider sticky left-0"
                                   style={{ color: 'var(--ink-muted)', background: 'var(--surface2)', minWidth: 160, borderRight: '1px solid var(--border)' }}>
                                   Ejercicio
                                 </th>
                                 <th className="px-3 py-3 font-black uppercase tracking-wider text-center"
-                                  style={{ color: 'var(--ink-muted)', minWidth: 60, borderRight: '1px solid var(--border)' }}>
+                                  style={{ color: 'var(--ink-muted)', minWidth: 50, borderRight: '2px solid var(--border)' }}>
                                   Series
                                 </th>
                                 {h.sessions.map((s, si) => (
-                                  <th key={si} colSpan={2} className="px-3 py-3 font-black uppercase tracking-wider text-center"
-                                    style={{ color: 'var(--accent)', borderRight: si < h.sessions.length - 1 ? '2px solid var(--border)' : 'none', minWidth: 180 }}>
+                                  <th key={si} className="px-3 py-3 font-black uppercase tracking-wider text-center"
+                                    style={{ color: 'var(--accent)', borderRight: si < h.sessions.length - 1 ? '1px solid var(--border)' : 'none', minWidth: 130 }}>
                                     {format(new Date(s.date), "dd MMM yy", { locale: es })}
                                   </th>
                                 ))}
                               </tr>
-                              <tr style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border)' }}>
-                                <th className="sticky left-0" style={{ background: 'var(--surface)', borderRight: '1px solid var(--border)' }} />
-                                <th style={{ borderRight: '1px solid var(--border)' }} />
-                                {h.sessions.map((_, si) => (
-                                  <>
-                                    <th key={`p${si}`} className="px-3 py-2 font-black uppercase tracking-wider text-center"
-                                      style={{ color: 'var(--ink-muted)', minWidth: 100 }}>Pesos</th>
-                                    <th key={`n${si}`} className="px-3 py-2 font-black uppercase tracking-wider text-center"
-                                      style={{ color: 'var(--ink-muted)', minWidth: 80, borderRight: si < h.sessions.length - 1 ? '2px solid var(--border)' : 'none' }}>Nota</th>
-                                  </>
-                                ))}
-                              </tr>
                             </thead>
                             <tbody>
+                              {/* Fila de nota de sesión */}
+                              <tr style={{ borderBottom: '2px solid var(--border)', background: 'rgba(124,58,237,0.04)' }}>
+                                <td className="px-3 py-2 font-black sticky left-0 text-[9px] uppercase tracking-wider"
+                                  style={{ color: 'var(--ink-muted)', background: 'rgba(124,58,237,0.04)', borderRight: '1px solid var(--border)' }}>
+                                  Nota sesión
+                                </td>
+                                <td style={{ borderRight: '2px solid var(--border)' }} />
+                                {h.sessions.map((s, si) => (
+                                  <td key={si} className="px-3 py-2 text-center italic"
+                                    style={{ color: 'var(--ink-muted)', borderRight: si < h.sessions.length - 1 ? '1px solid var(--border)' : 'none',
+                                      maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                                    title={s.note ?? ''}>
+                                    {s.note || <span style={{ color: 'var(--ink-dim)', opacity: 0.4 }}>—</span>}
+                                  </td>
+                                ))}
+                              </tr>
+                              {/* Filas de ejercicios — solo los que tienen pesos en al menos una sesión */}
                               {h.day.ejercicios
                                 .filter(ex =>
-                                  // solo mostrar ejercicios que tienen datos en al menos una sesión
                                   h.sessions.some(s => {
                                     const exData = s.exercises.find(e => e.id === ex.id || e.nombre === ex.nombre);
                                     return exData && exData.sets.some(Boolean);
@@ -1668,29 +1675,22 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
                                 .map((ex, ei) => (
                                 <tr key={ex.id} style={{ borderBottom: '1px solid var(--border)', background: ei % 2 === 0 ? 'var(--bg)' : 'var(--surface)' }}>
                                   <td className="px-3 py-3 font-bold sticky left-0"
-                                    style={{ color: 'var(--ink)', background: ei % 2 === 0 ? 'var(--bg)' : 'var(--surface)', borderRight: '1px solid var(--border)', maxWidth: 160 }}>
+                                    style={{ color: 'var(--ink)', background: ei % 2 === 0 ? 'var(--bg)' : 'var(--surface)', borderRight: '1px solid var(--border)', maxWidth: 160, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                                     {ex.nombre}
                                   </td>
-                                  <td className="px-3 py-3 text-center font-black" style={{ color: 'var(--ink-muted)', borderRight: '1px solid var(--border)' }}>
+                                  <td className="px-3 py-3 text-center font-black" style={{ color: 'var(--ink-muted)', borderRight: '2px solid var(--border)' }}>
                                     {ex.series}
                                   </td>
                                   {h.sessions.map((s, si) => {
                                     const exData = s.exercises.find(e => e.id === ex.id || e.nombre === ex.nombre);
-                                    const pesos = exData?.sets.filter(Boolean).join(' / ') ?? '—';
+                                    const pesos = exData?.sets.filter(Boolean).join(' / ') || '—';
                                     return (
-                                      <>
-                                        <td key={`p${si}`} className="px-3 py-3 text-center font-bold"
-                                          style={{ color: pesos === '—' ? 'var(--ink-dim)' : 'var(--ink)', fontVariantNumeric: 'tabular-nums' }}>
-                                          {pesos}
-                                        </td>
-                                        <td key={`n${si}`} className="px-3 py-3 text-center"
-                                          style={{ color: 'var(--ink-muted)', fontStyle: s.note ? 'italic' : 'normal',
-                                            borderRight: si < h.sessions.length - 1 ? '2px solid var(--border)' : 'none',
-                                            maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                                          title={s.note ?? ''}>
-                                          {s.note || '—'}
-                                        </td>
-                                      </>
+                                      <td key={si} className="px-3 py-3 text-center font-bold"
+                                        style={{ color: pesos === '—' ? 'var(--ink-dim)' : 'var(--ink)',
+                                          borderRight: si < h.sessions.length - 1 ? '1px solid var(--border)' : 'none',
+                                          fontVariantNumeric: 'tabular-nums' }}>
+                                        {pesos}
+                                      </td>
                                     );
                                   })}
                                 </tr>
