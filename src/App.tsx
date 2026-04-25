@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import {
   ChevronLeft, Check, Video, ArrowRight, X,
   LogOut, Trash2, RefreshCw, TrendingUp, Info, Shield,
-  Upload, Plus, FileDown, FileUp, Flame, StickyNote, Star,
+  Upload, Plus, FileDown, FileUp, Flame, StickyNote, Star, FileText,
   Sun, Moon, Eye, EyeOff, User, Lock, Calendar, History,
   Table, BarChart2, Loader, Edit2, ChevronDown, ChevronUp,
   Users, Activity, Filter
@@ -515,7 +515,7 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
   const [currentSet, setCurrentSet] = useState(1);
   const [isResting, setIsResting] = useState(false);
   const [restTime, setRestTime] = useState(0);
-  const [sessionData, setSessionData] = useState<Record<string, string[]>>(weights);
+  const [sessionData, setSessionData] = useState<Record<string, string[]>>({});
   const [completed, setCompleted] = useState<Set<string>>(new Set());
   const [showVideo, setShowVideo] = useState(false);
   const [showFinish, setShowFinish] = useState(false);
@@ -604,7 +604,7 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
       id: crypto.randomUUID(), dayName: day.nombre, userName: user.id,
       date: new Date().toISOString(), note: note || undefined,
       exercises: day.ejercicios
-        .filter(ex => completed.has(ex.id) || sessionData[ex.id]?.some(s => s !== ''))
+        .filter(ex => sessionData[ex.id]?.some(s => s !== ''))  // solo ejercicios con pesos introducidos ESTA sesión
         .map(ex => ({ id: ex.id, nombre: ex.nombre, sets: sessionData[ex.id] || [] }))
     };
     await onFinish(session);
@@ -786,11 +786,15 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
               <div className="flex gap-2">
                 <button onClick={() => setShowVideo(true)} className="flex-1 py-3 flex items-center justify-center gap-2 text-[9px] font-black uppercase tracking-[0.15em] rounded-xl"
                   style={{ border: '1px solid var(--border)', background: 'transparent', color: 'var(--ink-muted)', cursor: 'pointer' }}>
-                  <Video size={13} /> Ver Técnica
+                  <Video size={13} /> Técnica
                 </button>
                 <button onClick={() => setShowExNote(true)} className="flex-1 py-3 flex items-center justify-center gap-2 text-[9px] font-black uppercase tracking-[0.15em] rounded-xl"
                   style={{ border: `1px solid ${exerciseNotes[exercise.id] ? 'var(--accent-mid)' : 'var(--border)'}`, background: exerciseNotes[exercise.id] ? 'var(--accent-dim)' : 'transparent', color: exerciseNotes[exercise.id] ? 'var(--accent)' : 'var(--ink-muted)', cursor: 'pointer' }}>
-                  <StickyNote size={13} /> {exerciseNotes[exercise.id] ? 'Nota ✓' : 'Nota'}
+                  <StickyNote size={13} /> {exerciseNotes[exercise.id] ? 'Nota ej. ✓' : 'Nota ej.'}
+                </button>
+                <button onClick={() => setShowNote(true)} className="flex-1 py-3 flex items-center justify-center gap-2 text-[9px] font-black uppercase tracking-[0.15em] rounded-xl"
+                  style={{ border: `1px solid ${note ? 'rgba(234,179,8,0.4)' : 'var(--border)'}`, background: note ? 'rgba(234,179,8,0.08)' : 'transparent', color: note ? '#eab308' : 'var(--ink-muted)', cursor: 'pointer' }}>
+                  <FileText size={13} /> {note ? 'Sesión ✓' : 'Sesión'}
                 </button>
               </div>
             </motion.div>
