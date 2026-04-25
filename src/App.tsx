@@ -131,10 +131,10 @@ function vibrate(pattern: number | number[]) {
 }
 
 // ─── SHARED UI ─────────────────────────────────────────────────────────────
-function Avatar({ name, src, size = 'md' }: { name: string; src?: string; size?: 'sm' | 'md' | 'lg' }) {
+function Avatar({ name, src, size = 'md' }: { name: string; src?: string; size?: 'xs' | 'sm' | 'md' | 'lg' }) {
   const [err, setErr] = useState(false);
-  const sz = { sm: 'w-9 h-9', md: 'w-14 h-14', lg: 'w-20 h-20' }[size];
-  const tx = { sm: 'text-sm', md: 'text-xl', lg: 'text-3xl' }[size];
+  const sz = { xs: 'w-5 h-5', sm: 'w-9 h-9', md: 'w-14 h-14', lg: 'w-20 h-20' }[size];
+  const tx = { xs: 'text-[9px]', sm: 'text-sm', md: 'text-xl', lg: 'text-3xl' }[size];
   return (
     <div className={`${sz} rounded-full overflow-hidden flex-shrink-0`} style={{ border: '1px solid var(--border)' }}>
       {src && !err
@@ -225,6 +225,7 @@ function UserApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => 
   const [sessions, setSessions] = useState<WorkoutSession[]>([]);
   const [weights, setWeights] = useState<Record<string, string[]>>({});
   const [exerciseNotes, setExerciseNotes] = useState<Record<string, { text: string; updatedAt: string }>>({});
+  const [startDayIdx, setStartDayIdx] = useState(0);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -287,11 +288,12 @@ function UserApp({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => 
           {view === 'home' && currentUser && (
             <HomeView key="home" user={currentUser} sessions={sessions} routine={routine}
               theme={theme} onToggleTheme={onToggleTheme}
-              onStartWorkout={() => setView('workout')} onNavigate={setView} onLogout={handleLogout} />
+              onStartWorkout={(dayIdx) => { setStartDayIdx(dayIdx); setView('workout'); }} onNavigate={setView} onLogout={handleLogout} />
           )}
           {view === 'workout' && currentUser && (
             <WorkoutView key="workout" user={currentUser} sessions={sessions} routine={routine}
               weights={weights} onSaveWeight={handleSaveWeight} onFinish={handleFinishWorkout} onBack={() => setView('home')}
+              initialDayIdx={startDayIdx}
               exerciseNotes={exerciseNotes}
               onSaveExerciseNote={async (exId, text) => {
                 if (text.trim()) {
@@ -383,7 +385,7 @@ function LoginView({ theme, onToggleTheme, onLogin }: {
 // ─── HOME ──────────────────────────────────────────────────────────────────
 function HomeView({ user, sessions, routine, theme, onToggleTheme, onStartWorkout, onNavigate, onLogout }: {
   user: UserProfile; sessions: WorkoutSession[]; routine: Routine; theme: Theme;
-  onToggleTheme: () => void; onStartWorkout: () => void; onNavigate: (v: AppView) => void; onLogout: () => void;
+  onToggleTheme: () => void; onStartWorkout: (dayIdx: number) => void; onNavigate: (v: AppView) => void; onLogout: () => void;
 }) {
   const lastSession = sessions[0];
   const streak = calcStreak(sessions);
@@ -474,8 +476,8 @@ function HomeView({ user, sessions, routine, theme, onToggleTheme, onStartWorkou
           <div className="flex-1 h-px" style={{ background: 'var(--border)' }} />
         </div>
         <div className="space-y-2.5">
-          {routine.dias.map(day => (
-            <button key={day.dia} onClick={onStartWorkout}
+          {routine.dias.map((day, i) => (
+            <button key={day.dia} onClick={() => onStartWorkout(i)}
               className="w-full rounded-[1.5rem] p-4 text-left flex items-center justify-between group active:scale-[0.98] transition-all"
               style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
               onMouseOver={e => e.currentTarget.style.borderColor = 'var(--accent)'}
@@ -501,14 +503,14 @@ function HomeView({ user, sessions, routine, theme, onToggleTheme, onStartWorkou
 }
 
 // ─── WORKOUT ───────────────────────────────────────────────────────────────
-function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish, onBack, exerciseNotes, onSaveExerciseNote }: {
+function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish, onBack, initialDayIdx = 0, exerciseNotes, onSaveExerciseNote }: {
   user: UserProfile; sessions: WorkoutSession[]; routine: Routine;
   weights: Record<string, string[]>; onSaveWeight: (id: string, idx: number, w: string) => void;
-  onFinish: (s: WorkoutSession) => void; onBack: () => void;
+  onFinish: (s: WorkoutSession) => void; onBack: () => void; initialDayIdx?: number;
   exerciseNotes: Record<string, { text: string; updatedAt: string }>;
   onSaveExerciseNote: (exerciseId: string, text: string) => Promise<void>;
 }) {
-  const [dayIdx, setDayIdx] = useState(0);
+  const [dayIdx, setDayIdx] = useState(initialDayIdx);
   const [exIdx, setExIdx] = useState(0);
   const [currentSet, setCurrentSet] = useState(1);
   const [isResting, setIsResting] = useState(false);
@@ -525,6 +527,7 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
   const [showExNote, setShowExNote] = useState(false);
   const [showExNoteAlert, setShowExNoteAlert] = useState(false);
   const [exNoteSaving, setExNoteSaving] = useState(false);
+  const [alertShownFor, setAlertShownFor] = useState<Set<string>>(new Set());
   const [editingAllSets, setEditingAllSets] = useState(false);
   const [totalRestSecs, setTotalRestSecs] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -536,20 +539,20 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
 
   useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
 
-  // Mostrar aviso de nota anterior cuando cambia el ejercicio
+  // Mostrar aviso de nota anterior cuando cambia el ejercicio o cuando cargan las notas
   useEffect(() => {
     if (!exercise) return;
     const saved = exerciseNotes[exercise.id];
-    if (saved) {
-      const savedDate = new Date(saved.updatedAt).toDateString();
-      const today = new Date().toDateString();
-      // Mostrar popup solo si la nota es de un día anterior
-      if (savedDate !== today) {
-        setShowExNoteAlert(true);
-      }
+    if (!saved) return;
+    if (alertShownFor.has(exercise.id)) return; // ya mostrado en esta sesión
+    const savedDate = new Date(saved.updatedAt).toDateString();
+    const today = new Date().toDateString();
+    if (savedDate !== today) {
+      setShowExNoteAlert(true);
+      setAlertShownFor(prev => new Set(prev).add(exercise.id));
     }
     setShowExNote(false);
-  }, [exercise?.id]);
+  }, [exercise?.id, exerciseNotes]);
 
   const startRest = (secs: number) => {
     if (timerRef.current) clearInterval(timerRef.current);
@@ -646,18 +649,7 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
           </button>
         </div>
 
-        {routine.dias.length > 1 && (
-          <div className="flex gap-1.5 mb-3 overflow-x-auto no-scrollbar">
-            {routine.dias.map((d, i) => (
-              <button key={d.dia} onClick={() => { setDayIdx(i); setExIdx(0); setCurrentSet(1); skipRest(); }}
-                className="flex-shrink-0 px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-wider"
-                style={{ background: i === dayIdx ? 'var(--accent-dim)' : 'var(--surface)', border: `1px solid ${i === dayIdx ? 'var(--accent-mid)' : 'var(--border)'}`, color: i === dayIdx ? 'var(--accent)' : 'var(--ink-muted)' }}>
-                {d.nombre.split('–')[1]?.trim() || `Día ${d.dia}`}
-              </button>
-            ))}
-          </div>
-        )}
-
+        {/* barra de ejercicios */}
         <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
           {day.ejercicios.map((ex, i) => (
             <button key={ex.id} onClick={() => { setExIdx(i); setCurrentSet(1); skipRest(); setEditingAllSets(false); }}
@@ -1151,7 +1143,7 @@ function ProgressView({ sessions, user, routine, onBack }: { sessions: WorkoutSe
 
 
 // ─── ADMIN PANEL ───────────────────────────────────────────────────────────
-type AdminSubview = 'dashboard' | 'upload' | 'profiles' | 'backup';
+type AdminSubview = 'dashboard' | 'upload' | 'profiles' | 'backup' | 'historial';
 
 function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => void }) {
   const [authed, setAuthed] = useState(false);
@@ -1181,6 +1173,8 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
   const [backupLoading, setBackupLoading] = useState(false);
   const [importLoading, setImportLoading] = useState(false);
   const [excelLoading, setExcelLoading] = useState(false);
+  const [historialUserId, setHistorialUserId] = useState<string | null>(null);
+  const [historialDayIdx, setHistorialDayIdx] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const dropRef = useRef<HTMLDivElement>(null);
@@ -1332,82 +1326,59 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
     setBackupLoading(false);
   };
 
+  // Construye la tabla de historial para un usuario+día
+  const buildHistorial = (userId: string, dayIdx: number) => {
+    const routine = routines[userId];
+    if (!routine) return null;
+    const day = routine.dias[dayIdx];
+    if (!day) return null;
+    const sessions = allSessions
+      .filter(s => s.userName === userId && s.dayName === day.nombre)
+      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    return { day, sessions };
+  };
+
   const exportExcel = async () => {
     setExcelLoading(true);
     try {
-      // fetchAllSessions trae las sesiones de TODOS los usuarios
-      const allSessions = await fetchAllSessions();
       const wb = XLSX.utils.book_new();
-
       for (const user of users) {
         const routine = routines[user.id];
         if (!routine) continue;
-
-        const userSessions = allSessions
-          .filter(s => s.userName === user.id)
-          .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-
-        for (const day of routine.dias) {
-          const daySessions = userSessions.filter(s => s.dayName === day.nombre);
-
-          // Máximo de series entre todos los ejercicios del día → define cuántas columnas de serie por sesión
-          const maxSeries = Math.max(...day.ejercicios.map(e => e.series), 1);
-
-          // Cabecera base (mismo formato que el Excel de subida)
-          const baseHeaders = ['Ejercicio', 'Series', 'Repeticiones', 'RPE', 'Descanso (seg)', 'Video', 'Observaciones'];
-
-          // Una columna por serie + una de nota por cada sesión realizada
+        for (let di = 0; di < routine.dias.length; di++) {
+          const h = buildHistorial(user.id, di);
+          if (!h || h.sessions.length === 0) continue;
+          const { day, sessions } = h;
+          const baseHeaders = ['Ejercicio', 'Series programadas'];
           const sessionHeaders: string[] = [];
-          daySessions.forEach(s => {
+          sessions.forEach(s => {
             const d = format(new Date(s.date), 'dd/MM/yy');
-            for (let i = 1; i <= maxSeries; i++) sessionHeaders.push(`${d} - Serie ${i}`);
-            sessionHeaders.push(`${d} - Nota sesión`);
+            sessionHeaders.push(`${d} — Pesos`);
+            sessionHeaders.push(`${d} — Nota`);
           });
-
-          const headerRow = [...baseHeaders, ...sessionHeaders];
-          const rows: (string | number)[][] = [headerRow];
-
+          const rows: (string | number)[][] = [[...baseHeaders, ...sessionHeaders]];
           for (const ex of day.ejercicios) {
-            const baseRow: (string | number)[] = [
-              ex.nombre,
-              ex.series,
-              ex.repeticiones,
-              ex.intensidad_rpe.join(', '),
-              ex.descanso_segundos,
-              ex.video ?? '',
-              ex.observaciones ?? '',
-            ];
+            const baseRow: (string | number)[] = [ex.nombre, ex.series];
             const sessionCols: (string | number)[] = [];
-            daySessions.forEach(s => {
+            sessions.forEach(s => {
               const exData = s.exercises.find(e => e.id === ex.id || e.nombre === ex.nombre);
-              // Rellenar hasta maxSeries (vacío si el ejercicio tiene menos series o no se registró)
-              for (let i = 0; i < maxSeries; i++) {
-                sessionCols.push(exData?.sets[i] ?? '');
-              }
+              sessionCols.push(exData?.sets.filter(Boolean).join(' / ') ?? '—');
               sessionCols.push(s.note ?? '');
             });
             rows.push([...baseRow, ...sessionCols]);
           }
-
-          // Nombre de pestaña máx 31 chars (límite Excel)
           const sheetName = `${user.name} - ${day.nombre}`.replace(/[\\/*?[\]:]/g, '').slice(0, 31);
           const ws = XLSX.utils.aoa_to_sheet(rows);
-          ws['!cols'] = headerRow.map((_, i) => ({ wch: i === 0 ? 30 : i < 7 ? 14 : 13 }));
+          ws['!cols'] = rows[0].map((_, i) => ({ wch: i === 0 ? 30 : i === 1 ? 10 : 20 }));
           XLSX.utils.book_append_sheet(wb, ws, sheetName);
         }
       }
-
-      if (wb.SheetNames.length === 0) {
-        showToast('No hay datos de entreno para exportar');
-        setExcelLoading(false);
-        return;
-      }
-
+      if (wb.SheetNames.length === 0) { showToast('No hay sesiones registradas aún'); setExcelLoading(false); return; }
       const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
       const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a'); a.href = url;
-      a.download = `gymtrainer-entrenos-${format(new Date(), 'yyyy-MM-dd')}.xlsx`; a.click();
+      a.download = `gymtrainer-historial-${format(new Date(), 'yyyy-MM-dd')}.xlsx`; a.click();
       URL.revokeObjectURL(url);
       showToast('Excel exportado ✓');
     } catch (e: any) { showToast('Error al exportar: ' + e.message); }
@@ -1452,6 +1423,7 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
 
   const subviews: { key: AdminSubview; label: string }[] = [
     { key: 'dashboard', label: 'Dashboard' },
+    { key: 'historial', label: 'Historial' },
     { key: 'upload', label: 'Rutinas' },
     { key: 'profiles', label: 'Usuarios' },
     { key: 'backup', label: 'Backup' },
@@ -1502,21 +1474,7 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
                   ))}
                 </div>
 
-                {/* ── Exportar Excel ── */}
-                <button onClick={exportExcel} disabled={excelLoading}
-                  className="w-full rounded-2xl p-4 flex items-center gap-3 active:scale-[0.98] cursor-pointer disabled:opacity-50 transition-all"
-                  style={{ background: 'rgba(34,197,94,0.07)', border: '1px solid rgba(34,197,94,0.22)', textAlign: 'left' }}>
-                  <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e' }}>
-                    {excelLoading ? <Loader size={16} className="animate-spin" /> : <Table size={16} />}
-                  </div>
-                  <div>
-                    <p className="font-black text-sm" style={{ color: 'var(--ink)' }}>Exportar Excel de entrenos</p>
-                    <p className="text-[9px] font-black uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>
-                      {excelLoading ? 'Generando…' : 'Rutina + pesos, series y notas por día'}
-                    </p>
-                  </div>
-                  <FileDown size={14} className="ml-auto flex-shrink-0" style={{ color: 'rgba(34,197,94,0.6)' }} />
-                </button>
+                {/* ── Exportar Excel → movido a pestaña Historial ── */}
 
                 {users.map(u => {
                   const routine = routines[u.id];
@@ -1594,6 +1552,150 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
                 })}
               </>
         )}
+
+        {subview === 'historial' && (() => {
+          const selectedUser = historialUserId ? users.find(u => u.id === historialUserId) : users[0];
+          const selUid = selectedUser?.id ?? null;
+          const routine = selUid ? routines[selUid] : null;
+          const h = selUid && routine ? buildHistorial(selUid, historialDayIdx) : null;
+
+          return (
+            <div className="space-y-4">
+              {/* Cabecera + botón exportar */}
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>
+                  Historial de entrenos
+                </p>
+                <button onClick={exportExcel} disabled={excelLoading}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest cursor-pointer disabled:opacity-50 transition-all"
+                  style={{ background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.3)', color: '#22c55e' }}>
+                  {excelLoading ? <Loader size={11} className="animate-spin" /> : <FileDown size={11} />}
+                  {excelLoading ? 'Exportando…' : 'Excel'}
+                </button>
+              </div>
+
+              {/* Selector de usuario */}
+              {users.length === 0
+                ? <div className="flex flex-col items-center justify-center py-16" style={{ color: 'var(--ink-dim)' }}>
+                    <User size={40} className="mb-3 opacity-20" />
+                    <p className="text-[10px] font-black uppercase tracking-widest">Sin usuarios</p>
+                  </div>
+                : <>
+                  <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
+                    {users.map(u => (
+                      <button key={u.id}
+                        onClick={() => { setHistorialUserId(u.id); setHistorialDayIdx(0); }}
+                        className="flex-shrink-0 flex items-center gap-2 px-3 py-2 rounded-xl text-[9px] font-black uppercase tracking-wider cursor-pointer transition-all"
+                        style={{
+                          background: (selUid === u.id) ? 'var(--accent-dim)' : 'var(--surface)',
+                          border: `1px solid ${(selUid === u.id) ? 'var(--accent-mid)' : 'var(--border)'}`,
+                          color: (selUid === u.id) ? 'var(--accent)' : 'var(--ink-muted)',
+                        }}>
+                        <Avatar name={u.name} src={u.avatarUrl} size="xs" />
+                        {u.name}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Selector de día */}
+                  {routine && (
+                    <div className="flex gap-1.5 overflow-x-auto no-scrollbar pb-1">
+                      {routine.dias.map((d, i) => (
+                        <button key={i} onClick={() => setHistorialDayIdx(i)}
+                          className="flex-shrink-0 px-3 py-1.5 rounded-lg text-[8px] font-black uppercase tracking-wider cursor-pointer transition-all"
+                          style={{
+                            background: historialDayIdx === i ? 'var(--surface)' : 'transparent',
+                            border: `1px solid ${historialDayIdx === i ? 'var(--border)' : 'transparent'}`,
+                            color: historialDayIdx === i ? 'var(--ink)' : 'var(--ink-muted)',
+                          }}>
+                          {d.nombre}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Tabla de historial */}
+                  {!h
+                    ? <div className="rounded-2xl p-8 text-center" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                        <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: 'var(--ink-dim)' }}>Sin rutina asignada</p>
+                      </div>
+                    : h.sessions.length === 0
+                      ? <div className="rounded-2xl p-8 text-center" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                          <Activity size={32} className="mx-auto mb-3 opacity-20" style={{ color: 'var(--ink-dim)' }} />
+                          <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: 'var(--ink-dim)' }}>Sin sesiones registradas para este día</p>
+                        </div>
+                      : <div className="overflow-x-auto rounded-2xl" style={{ border: '1px solid var(--border)' }}>
+                          <table className="w-full text-[10px]" style={{ borderCollapse: 'collapse', minWidth: 400 + h.sessions.length * 180 }}>
+                            <thead>
+                              <tr style={{ background: 'var(--surface2)', borderBottom: '2px solid var(--border)' }}>
+                                <th className="text-left px-3 py-3 font-black uppercase tracking-wider sticky left-0"
+                                  style={{ color: 'var(--ink-muted)', background: 'var(--surface2)', minWidth: 160, borderRight: '1px solid var(--border)' }}>
+                                  Ejercicio
+                                </th>
+                                <th className="px-3 py-3 font-black uppercase tracking-wider text-center"
+                                  style={{ color: 'var(--ink-muted)', minWidth: 60, borderRight: '1px solid var(--border)' }}>
+                                  Series
+                                </th>
+                                {h.sessions.map((s, si) => (
+                                  <th key={si} colSpan={2} className="px-3 py-3 font-black uppercase tracking-wider text-center"
+                                    style={{ color: 'var(--accent)', borderRight: si < h.sessions.length - 1 ? '2px solid var(--border)' : 'none', minWidth: 180 }}>
+                                    {format(new Date(s.date), "dd MMM yy", { locale: es })}
+                                  </th>
+                                ))}
+                              </tr>
+                              <tr style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border)' }}>
+                                <th className="sticky left-0" style={{ background: 'var(--surface)', borderRight: '1px solid var(--border)' }} />
+                                <th style={{ borderRight: '1px solid var(--border)' }} />
+                                {h.sessions.map((_, si) => (
+                                  <>
+                                    <th key={`p${si}`} className="px-3 py-2 font-black uppercase tracking-wider text-center"
+                                      style={{ color: 'var(--ink-muted)', minWidth: 100 }}>Pesos</th>
+                                    <th key={`n${si}`} className="px-3 py-2 font-black uppercase tracking-wider text-center"
+                                      style={{ color: 'var(--ink-muted)', minWidth: 80, borderRight: si < h.sessions.length - 1 ? '2px solid var(--border)' : 'none' }}>Nota</th>
+                                  </>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {h.day.ejercicios.map((ex, ei) => (
+                                <tr key={ex.id} style={{ borderBottom: '1px solid var(--border)', background: ei % 2 === 0 ? 'var(--bg)' : 'var(--surface)' }}>
+                                  <td className="px-3 py-3 font-bold sticky left-0"
+                                    style={{ color: 'var(--ink)', background: ei % 2 === 0 ? 'var(--bg)' : 'var(--surface)', borderRight: '1px solid var(--border)', maxWidth: 160 }}>
+                                    {ex.nombre}
+                                  </td>
+                                  <td className="px-3 py-3 text-center font-black" style={{ color: 'var(--ink-muted)', borderRight: '1px solid var(--border)' }}>
+                                    {ex.series}
+                                  </td>
+                                  {h.sessions.map((s, si) => {
+                                    const exData = s.exercises.find(e => e.id === ex.id || e.nombre === ex.nombre);
+                                    const pesos = exData?.sets.filter(Boolean).join(' / ') ?? '—';
+                                    return (
+                                      <>
+                                        <td key={`p${si}`} className="px-3 py-3 text-center font-bold"
+                                          style={{ color: pesos === '—' ? 'var(--ink-dim)' : 'var(--ink)', fontVariantNumeric: 'tabular-nums' }}>
+                                          {pesos}
+                                        </td>
+                                        <td key={`n${si}`} className="px-3 py-3 text-center"
+                                          style={{ color: 'var(--ink-muted)', fontStyle: s.note ? 'italic' : 'normal',
+                                            borderRight: si < h.sessions.length - 1 ? '2px solid var(--border)' : 'none',
+                                            maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                                          title={s.note ?? ''}>
+                                          {s.note || '—'}
+                                        </td>
+                                      </>
+                                    );
+                                  })}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                  }
+                </>
+              }
+            </div>
+          );
+        })()}
 
         {subview === 'upload' && <>
           <div>
