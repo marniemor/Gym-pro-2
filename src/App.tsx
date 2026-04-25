@@ -539,18 +539,14 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
 
   useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
 
-  // Mostrar aviso de nota anterior cuando cambia el ejercicio o cuando cargan las notas
+  // Mostrar aviso de nota cuando cambia el ejercicio o cuando cargan las notas
   useEffect(() => {
     if (!exercise) return;
     const saved = exerciseNotes[exercise.id];
     if (!saved) return;
     if (alertShownFor.has(exercise.id)) return; // ya mostrado en esta sesión
-    const savedDate = new Date(saved.updatedAt).toDateString();
-    const today = new Date().toDateString();
-    if (savedDate !== today) {
-      setShowExNoteAlert(true);
-      setAlertShownFor(prev => new Set(prev).add(exercise.id));
-    }
+    setShowExNoteAlert(true);
+    setAlertShownFor(prev => new Set(prev).add(exercise.id));
     setShowExNote(false);
   }, [exercise?.id, exerciseNotes]);
 
@@ -849,52 +845,58 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
               className="btn-accent mt-4">Guardar</button>
           </Modal>
         )}
-        {/* ── Aviso nota anterior del ejercicio ── */}
-        {showExNoteAlert && exerciseNotes[exercise?.id ?? ''] && (
-          <Modal onClose={() => setShowExNoteAlert(false)}>
+      </AnimatePresence>
+
+      {/* ── Aviso nota anterior del ejercicio — fuera de AnimatePresence para garantizar render ── */}
+      {showExNoteAlert && exercise && exerciseNotes[exercise.id] && (
+        <div className="fixed inset-0 z-[300] flex items-end sm:items-center justify-center p-4"
+          style={{ background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(8px)' }}
+          onClick={e => e.target === e.currentTarget && setShowExNoteAlert(false)}>
+          <div className="w-full max-w-sm rounded-[2rem] p-7 shadow-2xl"
+            style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
             <div className="flex items-center gap-2 mb-3">
               <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(234,179,8,0.15)', color: '#eab308' }}>
                 <StickyNote size={15} />
               </div>
               <div>
                 <h3 className="text-base font-black italic" style={{ color: 'var(--ink)' }}>Nota anterior</h3>
-                <p className="text-[9px] font-black uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>{exercise?.nombre}</p>
+                <p className="text-[9px] font-black uppercase tracking-widest" style={{ color: 'var(--ink-muted)' }}>{exercise.nombre}</p>
               </div>
             </div>
             <div className="rounded-xl p-4 mb-4 text-sm leading-relaxed" style={{ background: 'rgba(234,179,8,0.07)', border: '1px solid rgba(234,179,8,0.22)', color: 'var(--ink)' }}>
-              "{exerciseNotes[exercise?.id ?? '']?.text}"
+              "{exerciseNotes[exercise.id].text}"
             </div>
             <button onClick={() => setShowExNoteAlert(false)} className="btn-accent">Entendido</button>
-          </Modal>
-        )}
-        {/* ── Editor de nota del ejercicio ── */}
-        {showExNote && (
-          <Modal onClose={() => !exNoteSaving && setShowExNote(false)}>
-            <div className="flex items-center gap-2 mb-4">
-              <StickyNote size={16} style={{ color: 'var(--accent)' }} />
-              <h3 className="text-xl font-black italic" style={{ color: 'var(--ink)' }}>Nota del ejercicio</h3>
-            </div>
-            <p className="text-[10px] font-black uppercase tracking-widest mb-3" style={{ color: 'var(--ink-muted)' }}>{exercise?.nombre}</p>
-            <textarea rows={4} defaultValue={exerciseNotes[exercise?.id ?? '']?.text ?? ''} id="exNoteTA"
-              placeholder="Dolor en hombro, fallo en serie 3, nueva técnica…"
-              className="w-full rounded-xl px-4 py-3 text-sm resize-none outline-none"
-              style={{ background: 'var(--surface2)', border: '1px solid var(--border)', color: 'var(--ink)' }} />
-            <div className="flex gap-2 mt-4">
-              <button onClick={() => { const el = document.getElementById('exNoteTA') as HTMLTextAreaElement; saveExNote(el?.value || ''); }}
-                disabled={exNoteSaving} className="btn-accent flex-1 disabled:opacity-50">
-                {exNoteSaving ? <><Loader size={13} className="animate-spin" /> Guardando…</> : 'Guardar'}
+          </div>
+        </div>
+      )}
+      {/* ── Editor de nota del ejercicio ── */}
+      {showExNote && exercise && (
+        <Modal onClose={() => !exNoteSaving && setShowExNote(false)}>
+          <div className="flex items-center gap-2 mb-4">
+            <StickyNote size={16} style={{ color: 'var(--accent)' }} />
+            <h3 className="text-xl font-black italic" style={{ color: 'var(--ink)' }}>Nota del ejercicio</h3>
+          </div>
+          <p className="text-[10px] font-black uppercase tracking-widest mb-3" style={{ color: 'var(--ink-muted)' }}>{exercise.nombre}</p>
+          <textarea rows={4} defaultValue={exerciseNotes[exercise.id]?.text ?? ''} id="exNoteTA"
+            placeholder="Dolor en hombro, fallo en serie 3, nueva técnica…"
+            className="w-full rounded-xl px-4 py-3 text-sm resize-none outline-none"
+            style={{ background: 'var(--surface2)', border: '1px solid var(--border)', color: 'var(--ink)' }} />
+          <div className="flex gap-2 mt-4">
+            <button onClick={() => { const el = document.getElementById('exNoteTA') as HTMLTextAreaElement; saveExNote(el?.value || ''); }}
+              disabled={exNoteSaving} className="btn-accent flex-1 disabled:opacity-50">
+              {exNoteSaving ? <><Loader size={13} className="animate-spin" /> Guardando…</> : 'Guardar'}
+            </button>
+            {exerciseNotes[exercise.id] && (
+              <button onClick={() => saveExNote('')} disabled={exNoteSaving}
+                className="py-4 px-4 rounded-xl font-black text-xs uppercase tracking-widest cursor-pointer disabled:opacity-50"
+                style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', color: 'var(--red)' }}>
+                Borrar
               </button>
-              {exerciseNotes[exercise?.id ?? ''] && (
-                <button onClick={() => saveExNote('')} disabled={exNoteSaving}
-                  className="py-4 px-4 rounded-xl font-black text-xs uppercase tracking-widest cursor-pointer disabled:opacity-50"
-                  style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', color: 'var(--red)' }}>
-                  Borrar
-                </button>
-              )}
-            </div>
-          </Modal>
-        )}
-      </AnimatePresence>
+            )}
+          </div>
+        </Modal>
+      )}
 
       {showVideo && (
         <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center p-6" style={{ background: 'rgba(0,0,0,0.97)' }}>
@@ -1328,8 +1330,7 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
 
   // Construye la tabla de historial para un usuario+día
   const buildHistorial = (userId: string, dayIdx: number) => {
-    const routine = routines[userId];
-    if (!routine) return null;
+    const routine = routines[userId] || ROUTINE_DATA;
     const day = routine.dias[dayIdx];
     if (!day) return null;
     const sessions = allSessions
@@ -1556,8 +1557,8 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
         {subview === 'historial' && (() => {
           const selectedUser = historialUserId ? users.find(u => u.id === historialUserId) : users[0];
           const selUid = selectedUser?.id ?? null;
-          const routine = selUid ? routines[selUid] : null;
-          const h = selUid && routine ? buildHistorial(selUid, historialDayIdx) : null;
+          const routine = selUid ? (routines[selUid] || ROUTINE_DATA) : null;
+          const h = selUid ? buildHistorial(selUid, historialDayIdx) : null;
 
           return (
             <div className="space-y-4">
