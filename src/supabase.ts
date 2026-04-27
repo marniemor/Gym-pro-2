@@ -91,7 +91,7 @@ export async function deleteRoutine(userId: string): Promise<void> {
 // ─── SESSIONS ──────────────────────────────────────────────────────────────
 const mapRow = (row: any): WorkoutSession => ({
   id: row.id, dayName: row.day_name, userName: row.user_id,
-  date: row.date, note: row.note ?? undefined,
+  date: row.date,
   exercises: row.exercises as WorkoutSession['exercises'],
 });
 
@@ -110,7 +110,7 @@ export async function fetchAllSessions(): Promise<WorkoutSession[]> {
 export async function insertSession(userId: string, session: WorkoutSession): Promise<void> {
   const { error } = await supabase.from('sessions').insert({
     id: session.id, user_id: userId, day_name: session.dayName,
-    date: session.date, note: session.note ?? null, exercises: session.exercises,
+    date: session.date, exercises: session.exercises,
   });
   if (error) throw error;
 }
@@ -180,7 +180,7 @@ export async function restoreFullBackup(backup: ReturnType<typeof fetchFullBacku
   for (const r of backup.routines) { await upsertRoutine(r.userId, r.routine); }
   for (const s of backup.sessions) {
     await supabase.from('sessions').delete().eq('id', s.id);
-    await supabase.from('sessions').insert({ id: s.id, user_id: s.userName, day_name: s.dayName, date: s.date, note: s.note ?? null, exercises: s.exercises });
+    await supabase.from('sessions').insert({ id: s.id, user_id: s.userName, day_name: s.dayName, date: s.date, exercises: s.exercises });
   }
   for (const w of backup.weights) { await upsertWeight(w.userId, w.exerciseId, w.sets); }
 }

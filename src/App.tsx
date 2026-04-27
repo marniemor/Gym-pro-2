@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import {
   ChevronLeft, Check, Video, ArrowRight, X,
   LogOut, Trash2, RefreshCw, TrendingUp, Info, Shield,
-  Upload, Plus, FileDown, FileUp, Flame, StickyNote, Star, FileText,
+  Upload, Plus, FileDown, FileUp, Flame, StickyNote, Star,
   Sun, Moon, Eye, EyeOff, User, Lock, Calendar, History,
   Table, BarChart2, Loader, Edit2, ChevronDown, ChevronUp,
   Users, Activity, Filter
@@ -520,8 +520,6 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
   const [showVideo, setShowVideo] = useState(false);
   const [showFinish, setShowFinish] = useState(false);
   const [showConfirmBack, setShowConfirmBack] = useState(false);
-  const [showNote, setShowNote] = useState(false);
-  const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
   // ── Notas por ejercicio (desde Supabase vía props) ──
   const [showExNote, setShowExNote] = useState(false);
@@ -602,9 +600,9 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
     setSaving(true);
     const session: WorkoutSession = {
       id: crypto.randomUUID(), dayName: day.nombre, userName: user.id,
-      date: new Date().toISOString(), note: note || undefined,
+      date: new Date().toISOString(),
       exercises: day.ejercicios
-        .filter(ex => sessionData[ex.id]?.some(s => s !== ''))  // solo ejercicios con pesos introducidos ESTA sesión
+        .filter(ex => sessionData[ex.id]?.some(s => s !== ''))
         .map(ex => ({ id: ex.id, nombre: ex.nombre, sets: sessionData[ex.id] || [] }))
     };
     await onFinish(session);
@@ -626,7 +624,7 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
     <div className="flex-1 flex flex-col h-screen" style={{ background: 'var(--bg)' }}>
 
       <header className="px-4 pt-8 pb-3 sticky top-0 z-30 backdrop-blur-xl"
-        style={{ background: 'rgba(5,5,5,0.9)', borderBottom: '1px solid var(--border)' }}>
+        style={{ background: 'var(--bg)', borderBottom: '1px solid var(--border)' }}>
         <div className="flex items-center justify-between mb-5">
           <button onClick={() => setShowConfirmBack(true)} className="w-9 h-9 rounded-full flex items-center justify-center"
             style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--ink-muted)' }}>
@@ -790,11 +788,7 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
                 </button>
                 <button onClick={() => setShowExNote(true)} className="flex-1 py-3 flex items-center justify-center gap-2 text-[9px] font-black uppercase tracking-[0.15em] rounded-xl"
                   style={{ border: `1px solid ${exerciseNotes[exercise.id] ? 'var(--accent-mid)' : 'var(--border)'}`, background: exerciseNotes[exercise.id] ? 'var(--accent-dim)' : 'transparent', color: exerciseNotes[exercise.id] ? 'var(--accent)' : 'var(--ink-muted)', cursor: 'pointer' }}>
-                  <StickyNote size={13} /> {exerciseNotes[exercise.id] ? 'Nota ej. ✓' : 'Nota ej.'}
-                </button>
-                <button onClick={() => setShowNote(true)} className="flex-1 py-3 flex items-center justify-center gap-2 text-[9px] font-black uppercase tracking-[0.15em] rounded-xl"
-                  style={{ border: `1px solid ${note ? 'rgba(234,179,8,0.4)' : 'var(--border)'}`, background: note ? 'rgba(234,179,8,0.08)' : 'transparent', color: note ? '#eab308' : 'var(--ink-muted)', cursor: 'pointer' }}>
-                  <FileText size={13} /> {note ? 'Sesión ✓' : 'Sesión'}
+                  <StickyNote size={13} /> {exerciseNotes[exercise.id] ? 'Nota ✓' : 'Nota'}
                 </button>
               </div>
             </motion.div>
@@ -835,17 +829,6 @@ function WorkoutView({ user, sessions, routine, weights, onSaveWeight, onFinish,
               Sí, salir
             </button>
             <button onClick={() => setShowConfirmBack(false)} className="btn-secondary">Continuar</button>
-          </Modal>
-        )}
-        {showNote && (
-          <Modal onClose={() => setShowNote(false)}>
-            <h3 className="text-xl font-black italic mb-4" style={{ color: 'var(--ink)' }}>Nota de sesión</h3>
-            <textarea rows={4} defaultValue={note} id="noteTA"
-              placeholder="Ej: Me noté cargado, nuevo PR…"
-              className="w-full rounded-xl px-4 py-3 text-sm resize-none outline-none"
-              style={{ background: 'var(--surface2)', border: '1px solid var(--border)', color: 'var(--ink)' }} />
-            <button onClick={() => { const el = document.getElementById('noteTA') as HTMLTextAreaElement; setNote(el?.value || ''); setShowNote(false); }}
-              className="btn-accent mt-4">Guardar</button>
           </Modal>
         )}
       </AnimatePresence>
@@ -993,7 +976,6 @@ function HistoryView({ sessions, routine, onBack, onDelete }: {
                     {format(new Date(s.date), 'dd MMMM yyyy', { locale: es })}
                   </p>
                   <h3 className="text-lg font-black italic tracking-tight" style={{ color: 'var(--ink)' }}>{s.dayName}</h3>
-                  {s.note && <p className="text-xs mt-1 italic" style={{ color: 'var(--ink-muted)' }}>"{s.note}"</p>}
                   <p className="text-[9px] font-black uppercase tracking-widest mt-1" style={{ color: 'var(--ink-dim)' }}>
                     Vol: <span style={{ color: 'var(--ink-muted)' }}>{calcVolume(s).toFixed(0)} kg</span>
                   </p>
@@ -1356,10 +1338,6 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
           const sessionHeaders: string[] = [];
           sessions.forEach(s => { sessionHeaders.push(format(new Date(s.date), 'dd/MM/yy')); });
           const rows: (string | number)[][] = [[...baseHeaders, ...sessionHeaders]];
-          // Primera fila: nota de sesión
-          const noteRow: (string | number)[] = ['Nota sesión', ''];
-          sessions.forEach(s => noteRow.push(s.note ?? ''));
-          rows.push(noteRow);
           // Filas de ejercicios (solo los que tienen pesos en alguna sesión)
           for (const ex of day.ejercicios) {
             const hasData = sessions.some(s => {
@@ -1652,22 +1630,6 @@ function AdminPanel({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () 
                               </tr>
                             </thead>
                             <tbody>
-                              {/* Fila de nota de sesión */}
-                              <tr style={{ borderBottom: '2px solid var(--border)', background: 'rgba(124,58,237,0.04)' }}>
-                                <td className="px-3 py-2 font-black sticky left-0 text-[9px] uppercase tracking-wider"
-                                  style={{ color: 'var(--ink-muted)', background: 'rgba(124,58,237,0.04)', borderRight: '1px solid var(--border)' }}>
-                                  Nota sesión
-                                </td>
-                                <td style={{ borderRight: '2px solid var(--border)' }} />
-                                {h.sessions.map((s, si) => (
-                                  <td key={si} className="px-3 py-2 text-center italic"
-                                    style={{ color: 'var(--ink-muted)', borderRight: si < h.sessions.length - 1 ? '1px solid var(--border)' : 'none',
-                                      maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                                    title={s.note ?? ''}>
-                                    {s.note || <span style={{ color: 'var(--ink-dim)', opacity: 0.4 }}>—</span>}
-                                  </td>
-                                ))}
-                              </tr>
                               {/* Filas de ejercicios — solo los que tienen pesos en al menos una sesión */}
                               {h.day.ejercicios
                                 .filter(ex =>

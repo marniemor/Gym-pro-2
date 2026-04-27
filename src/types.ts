@@ -34,7 +34,6 @@ export interface WorkoutSession {
   dayName: string;
   userName: string;
   date: string;
-  note?: string;
   exercises: {
     id: string;
     nombre: string;
